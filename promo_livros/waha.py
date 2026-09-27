@@ -107,6 +107,11 @@ class WahaClient:
         if hasattr(response_headers, "get"):
             content_type = str(response_headers.get("content-type") or "")
         if response.status_code >= 400 or "image/" not in content_type.lower() or not response.content:
+            logger.warning(
+                "WAHA recusou o QR: HTTP %s, content-type=%s",
+                response.status_code,
+                content_type or "(vazio)",
+            )
             raise WahaError("WAHA não devolveu o QR.", session_down=False)
         return bytes(response.content)
 

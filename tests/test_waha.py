@@ -26,11 +26,11 @@ class _Response:
 class _Http:
     def __init__(self, responses: list[_Response]) -> None:
         self.responses = list(responses)
-        self.calls: list[tuple[str, str, dict | None]] = []
+        self.calls: list[tuple[str, str, dict | None, dict]] = []
 
     def request(self, method: str, url: str, headers: dict, json: dict | None, timeout: float) -> _Response:
-        del headers, timeout
-        self.calls.append((method, url, json))
+        del timeout
+        self.calls.append((method, url, json, headers))
         return self.responses.pop(0)
 
 
@@ -81,6 +81,9 @@ class WahaClientTests(unittest.TestCase):
 
         self.assertEqual(client.fetch_qr_png(), b"\x89PNG\r\n")
         self.assertIn("/api/promo-livros/auth/qr", http.calls[0][1])
+        recorded_headers = http.calls[0][3]
+        self.assertEqual(recorded_headers.get("accept"), "image/png")
+        self.assertEqual(recorded_headers.get("x-api-key"), "chave")
 
     def test_fetch_qr_png_rejects_json(self) -> None:
         response = _Response(200, {"status": "WORKING"})
@@ -89,7 +92,8 @@ class WahaClientTests(unittest.TestCase):
         client = WahaClient("http://127.0.0.1:4443", "", "promo-livros", http=http)
         with self.assertRaises(WahaError):
             client.fetch_qr_png()
-
+        recorded_headers = http.calls[0][3]
+        self.assertNotIn("x-api-key", recorded_headers)
 
 if __name__ == "__main__":
     unittest.main()
