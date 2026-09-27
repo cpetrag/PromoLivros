@@ -46,8 +46,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._html(login_page(failed=False))
             return
         if path == "/whatsapp":
-            state, message = self.app.whatsapp()
-            self._html(render_whatsapp(state=state, message=message))
+            self._html(_whatsapp_page(self.app))
             return
         if path == "/grupos":
             choices, connected, notice = self.app.group_form()
@@ -146,6 +145,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
         else:
             self.send_header("Set-Cookie", f"{COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0")
         self.end_headers()
+
+
+def _whatsapp_page(app: DashboardApp) -> str:
+    state, message = app.whatsapp()
+    if state == "qr" and not message:
+        try:
+            app.qr_png()
+        except Exception:
+            return render_whatsapp(state=state, message="WAHA não devolveu o QR.")
+    return render_whatsapp(state=state, message=message)
 
 
 def _same_origin(handler: BaseHTTPRequestHandler) -> bool:

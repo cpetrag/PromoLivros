@@ -251,6 +251,11 @@ class GroupsFileTests(unittest.TestCase):
         with self.assertRaises(GroupsFileError):
             selected_groups(["999@g.us"], choices)
 
+    def test_write_groups_missing_file_raises_groups_file_error(self) -> None:
+        path = Path("nao-existe-pasta") / "config.yaml"
+        with self.assertRaises(GroupsFileError):
+            write_groups(path, [], enabled=False)
+
 
 if __name__ == "__main__":
     unittest.main()

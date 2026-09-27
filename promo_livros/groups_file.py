@@ -81,14 +81,33 @@ def replace_groups_block(text: str, groups: list[tuple[str, str]]) -> str:
 
 def write_groups(path: Path, groups: list[tuple[str, str]], *, enabled: bool) -> None:
     validate_groups(groups, enabled=enabled)
-    with path.open(encoding="utf-8", newline="") as handle:
-        original_text = handle.read()
-    updated = replace_groups_block(original_text, groups)
-    _assert_safe_groups_write(original_text, updated, groups)
-    temporary = path.with_suffix(".yaml.tmp")
-    with temporary.open("w", encoding="utf-8", newline="") as handle:
-        handle.write(updated)
-    temporary.replace(path)
+    temporary: Path | None = None
+    try:
+        try:
+            with path.open(encoding="utf-8", newline="") as handle:
+                original_text = handle.read()
+        except OSError as exc:
+            raise GroupsFileError("Não foi possível ler config.yaml.") from exc
+        updated = replace_groups_block(original_text, groups)
+        _assert_safe_groups_write(original_text, updated, groups)
+        temporary = path.with_suffix(".yaml.tmp")
+        try:
+            with temporary.open("w", encoding="utf-8", newline="") as handle:
+                handle.write(updated)
+            try:
+                temporary.replace(path)
+            except OSError as exc:
+                if temporary.is_file():
+                    temporary.unlink()
+                raise GroupsFileError("Não foi possível gravar config.yaml.") from exc
+        except OSError as exc:
+            if temporary is not None and temporary.is_file():
+                temporary.unlink()
+            raise GroupsFileError("Não foi possível gravar config.yaml.") from exc
+    except GroupsFileError:
+        raise
+    except OSError as exc:
+        raise GroupsFileError("Não foi possível gravar config.yaml.") from exc
 
 
 def _assert_safe_groups_write(

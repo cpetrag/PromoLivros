@@ -139,6 +139,46 @@ class ServerTests(unittest.TestCase):
         self.server.server_close()
 
 
+class WhatsappQrPageTests(unittest.TestCase):
+    def test_whatsapp_page_shows_error_when_qr_fetch_fails(self) -> None:
+        book = BookLine(
+            clock="20:00",
+            niche_label="Ficção",
+            title="Sapiens",
+            price_label="R$ 34,90",
+            book_status="pronto",
+            caption="linha",
+            groups=(),
+            reserve=False,
+        )
+
+        def failing_qr() -> bytes:
+            raise RuntimeError("WAHA down")
+
+        app = DashboardApp(
+            username="ana",
+            password="certa",
+            sessions=SessionStore(),
+            today=lambda: (None, DayView(day="2026-09-27", books=(book,))),
+            whatsapp=lambda: ("qr", None),
+            qr_png=failing_qr,
+            group_form=lambda: ([], True, None),
+            save_groups=lambda _ids: None,
+        )
+        DashboardHandler.app = app
+        server = ThreadingHTTPServer(("127.0.0.1", 0), DashboardHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            token = app.sessions.login("ana", "certa", "ana", "certa")
+            body = _get(server, "/whatsapp", cookie=token)
+            self.assertIn("WAHA não devolveu o QR.", body)
+            self.assertNotIn("/whatsapp/qr", body)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
 class SaveGroupsTests(unittest.TestCase):
     def test_empty_selection_refuses_when_whatsapp_enabled_in_file(self) -> None:
         yaml_text = """whatsapp:
