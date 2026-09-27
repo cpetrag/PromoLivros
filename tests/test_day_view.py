@@ -1,8 +1,12 @@
+import sqlite3
+import tempfile
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
 
-from promo_livros.day_view import build_day_view
+from promo_livros.day_view import build_day_view, captions_for, load_day_rows
 from promo_livros.models import Dispatch, NicheConfig, PublishSlot, QueuedPost, WhatsAppGroup
+from promo_livros.storage import DayReadError, Storage
 
 
 def _book(
@@ -103,6 +107,60 @@ class DayViewTests(unittest.TestCase):
         assert view is not None
         self.assertTrue(view.books[1].reserve)
         self.assertEqual(view.books[1].niche_label, "Ficção")
+
+
+class ReadOnlyStoreTests(unittest.TestCase):
+    def test_reads_queue_and_dispatch_without_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "test.sqlite"
+            storage = Storage(db_path)
+            storage.replace_queue("2026-09-27", [_book(0)])
+            storage.enqueue_dispatch(
+                day="2026-09-27",
+                niche_key="ficcao",
+                position=0,
+                asin="B000000001",
+                title="Sapiens",
+                price_cents=3490,
+                chat_id="120363430990609445@g.us",
+                group_name="Black Livros 01",
+                caption="texto da noite",
+                image_url=None,
+                now=datetime(2026, 9, 27, 23, 0, tzinfo=timezone.utc),
+            )
+            storage.close()
+
+            queue, dispatches = load_day_rows(db_path, "2026-09-27")
+            self.assertEqual(len(queue), 1)
+            self.assertEqual(queue[0].title, "Sapiens")
+            self.assertEqual(len(dispatches), 1)
+            self.assertEqual(dispatches[0].status, "na_fila")
+            caps = captions_for(dispatches, queue, "")
+            self.assertEqual(caps[("ficcao", 0)], "texto da noite")
+
+    def test_missing_file_is_an_empty_day(self) -> None:
+        missing = Path("nao-existe.sqlite")
+        if missing.exists():
+            missing.unlink()
+        queue, dispatches = load_day_rows(missing, "2026-09-27")
+        self.assertEqual(queue, [])
+        self.assertEqual(dispatches, [])
+
+    def test_locked_database_asks_for_refresh(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "locked.sqlite"
+            storage = Storage(db_path)
+            storage.replace_queue("2026-09-27", [_book(0)])
+            storage.close()
+
+            holder = sqlite3.connect(db_path)
+            holder.execute("BEGIN EXCLUSIVE")
+            try:
+                with self.assertRaises(DayReadError) as ctx:
+                    load_day_rows(db_path, "2026-09-27")
+                self.assertIn("Atualize a página", str(ctx.exception))
+            finally:
+                holder.close()
 
 
 if __name__ == "__main__":

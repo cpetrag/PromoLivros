@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import dataclass
+from pathlib import Path
 
-from promo_livros.formatter import format_brl
+from promo_livros.curation import _deal_from_row
+from promo_livros.formatter import format_brl, render_deal
 from promo_livros.models import Dispatch, NicheConfig, PublishSlot, QueuedPost, WhatsAppGroup
+from promo_livros.storage import DayReadError, Storage
 
 BOOK_LABELS = {
     "ready": "pronto",
@@ -81,6 +85,34 @@ def build_day_view(
             _book_line("", reserve_label, row, True, dispatches, saved_groups, captions)
         )
     return DayView(day=day, books=tuple(books))
+
+
+def load_day_rows(path: Path, day: str) -> tuple[list[QueuedPost], list[Dispatch]]:
+    if not path.is_file():
+        return [], []
+    store = Storage.open_readonly(path)
+    try:
+        return store.queue_for_day(day), store.dispatches_for_day(day)
+    except sqlite3.OperationalError as exc:
+        raise DayReadError("Atualize a página. A fila está ocupada.") from exc
+    finally:
+        store.close()
+
+
+def captions_for(
+    dispatches: list[Dispatch] | tuple[Dispatch, ...],
+    queue: list[QueuedPost] | tuple[QueuedPost, ...],
+    affiliate_tag: str,
+) -> dict[tuple[str, int], str]:
+    captions: dict[tuple[str, int], str] = {}
+    for item in dispatches:
+        if item.caption:
+            captions[(item.niche_key, item.position)] = item.caption
+    for row in queue:
+        key = (row.niche_key, row.position)
+        if key not in captions:
+            captions[key] = render_deal(_deal_from_row(row), affiliate_tag).caption
+    return captions
 
 
 def _book_line(

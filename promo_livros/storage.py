@@ -7,6 +7,10 @@ from pathlib import Path
 from promo_livros.models import Dispatch, LastPost, QueuedPost
 
 
+class DayReadError(Exception):
+    """O SQLite está ocupado. A página pede para atualizar."""
+
+
 class Storage:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -159,6 +163,45 @@ class Storage:
             (day, niche_key),
         ).fetchall()
         return [_queued(row) for row in rows]
+
+    def queue_for_day(self, day: str) -> list[QueuedPost]:
+        rows = self._connection.execute(
+            """
+            SELECT day, niche_key, position, asin, title, author, niche_label,
+                   price_cents, avg90_cents, historic_min_cents, rating, review_count,
+                   image_url, price_source, synopsis, lowest_for_days, blurb, status
+            FROM daily_queue
+            WHERE day = ?
+            ORDER BY niche_key, position
+            """,
+            (day,),
+        ).fetchall()
+        return [_queued(row) for row in rows]
+
+    def dispatches_for_day(self, day: str) -> list[Dispatch]:
+        rows = self._connection.execute(
+            """
+            SELECT id, day, niche_key, position, asin, title, price_cents, chat_id,
+                   group_name, caption, image_url, status, queued_at
+            FROM dispatches
+            WHERE day = ?
+            ORDER BY niche_key, position, id
+            """,
+            (day,),
+        ).fetchall()
+        return [_dispatch(row) for row in rows]
+
+    @classmethod
+    def open_readonly(cls, path: Path) -> Storage:
+        store = cls.__new__(cls)
+        store.path = path
+        uri = f"{path.resolve().as_uri()}?mode=ro"
+        try:
+            store._connection = sqlite3.connect(uri, uri=True, timeout=0.2)
+        except sqlite3.OperationalError as exc:
+            raise DayReadError("Atualize a página. A fila está ocupada.") from exc
+        store._connection.row_factory = sqlite3.Row
+        return store
 
     def mark_queue(self, day: str, niche_key: str, position: int, status: str) -> None:
         self._connection.execute(
