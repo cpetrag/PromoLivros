@@ -139,12 +139,34 @@ class ReadOnlyStoreTests(unittest.TestCase):
             self.assertEqual(caps[("ficcao", 0)], "texto da noite")
 
     def test_missing_file_is_an_empty_day(self) -> None:
-        missing = Path("nao-existe.sqlite")
-        if missing.exists():
-            missing.unlink()
-        queue, dispatches = load_day_rows(missing, "2026-09-27")
-        self.assertEqual(queue, [])
-        self.assertEqual(dispatches, [])
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "nao-existe.sqlite"
+            queue, dispatches = load_day_rows(missing, "2026-09-27")
+            self.assertEqual(queue, [])
+            self.assertEqual(dispatches, [])
+
+    def test_open_readonly_is_read_only_without_sidecars(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "test.sqlite"
+            storage = Storage(db_path)
+            storage.replace_queue("2026-09-27", [_book(0)])
+            storage.close()
+
+            wal = Path(f"{db_path}-wal")
+            journal = Path(f"{db_path}-journal")
+            self.assertFalse(wal.exists())
+            self.assertFalse(journal.exists())
+
+            readonly = Storage.open_readonly(db_path)
+            try:
+                readonly.queue_for_day("2026-09-27")
+                with self.assertRaises(sqlite3.OperationalError):
+                    readonly.mark_queue("2026-09-27", "ficcao", 0, "posted")
+            finally:
+                readonly.close()
+
+            self.assertFalse(wal.exists())
+            self.assertFalse(journal.exists())
 
     def test_locked_database_asks_for_refresh(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

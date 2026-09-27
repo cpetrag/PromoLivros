@@ -11,6 +11,17 @@ class DayReadError(Exception):
     """O SQLite está ocupado. A página pede para atualizar."""
 
 
+_BUSY_QUEUE_MESSAGE = "Atualize a página. A fila está ocupada."
+_UNREADABLE_QUEUE_MESSAGE = "Não consegui ler a fila de hoje."
+
+
+def day_read_error_from_sqlite(exc: sqlite3.Error) -> DayReadError:
+    code = getattr(exc, "sqlite_errorcode", None)
+    if code == sqlite3.SQLITE_BUSY:
+        return DayReadError(_BUSY_QUEUE_MESSAGE)
+    return DayReadError(_UNREADABLE_QUEUE_MESSAGE)
+
+
 class Storage:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -198,8 +209,8 @@ class Storage:
         uri = f"{path.resolve().as_uri()}?mode=ro"
         try:
             store._connection = sqlite3.connect(uri, uri=True, timeout=0.2)
-        except sqlite3.OperationalError as exc:
-            raise DayReadError("Atualize a página. A fila está ocupada.") from exc
+        except sqlite3.Error as exc:
+            raise day_read_error_from_sqlite(exc) from exc
         store._connection.row_factory = sqlite3.Row
         return store
 

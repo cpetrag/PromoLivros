@@ -7,7 +7,7 @@ from pathlib import Path
 from promo_livros.curation import _deal_from_row
 from promo_livros.formatter import format_brl, render_deal
 from promo_livros.models import Dispatch, NicheConfig, PublishSlot, QueuedPost, WhatsAppGroup
-from promo_livros.storage import DayReadError, Storage
+from promo_livros.storage import Storage, day_read_error_from_sqlite
 
 BOOK_LABELS = {
     "ready": "pronto",
@@ -90,13 +90,15 @@ def build_day_view(
 def load_day_rows(path: Path, day: str) -> tuple[list[QueuedPost], list[Dispatch]]:
     if not path.is_file():
         return [], []
-    store = Storage.open_readonly(path)
+    store = None
     try:
+        store = Storage.open_readonly(path)
         return store.queue_for_day(day), store.dispatches_for_day(day)
-    except sqlite3.OperationalError as exc:
-        raise DayReadError("Atualize a página. A fila está ocupada.") from exc
+    except sqlite3.Error as exc:
+        raise day_read_error_from_sqlite(exc) from exc
     finally:
-        store.close()
+        if store is not None:
+            store.close()
 
 
 def captions_for(
