@@ -1,0 +1,89 @@
+# Limites da busca. Dá para calibrar sem alterar o código.
+# Preços no Keepa são centavos; os filtros de preço da query usam essa unidade.
+# A nota current_RATING vai de 0 a 50 (45 = 4,5 estrelas).
+
+keepa:
+  # Amazon.com.br. O bot recusa outro domínio porque o link de afiliado é .com.br.
+  domain_id: 12
+  # Nome exato da categoria raiz. O ID é resolvido em GET /category?category=0.
+  category_name: "Livros"
+  # 0 = produto físico com preço. E-book (2) não traz preço de marketplace.
+  product_type: 0
+  # true devolve só uma variação por família e pode esconder outro formato em oferta.
+  single_variation: false
+  # Quantos ASINs baixar por ciclo (cada um custa cerca de 1 token).
+  # A página mínima do Product Finder é 50; o excedente não é baixado.
+  max_asins_per_run: 50
+  stats_days: 180
+  # Espera antes da chamada se o saldo não cobrir o custo mais esta reserva.
+  min_tokens_reserve: 20
+  request_timeout_seconds: 45
+  max_retries: 3
+
+sales:
+  # Ranking menor vende mais. current_SALES_gte: 1 é acrescentado no código
+  # porque -1 significa "sem ranking" e passaria num filtro só com lte.
+  current_rank_lte: 20000
+  avg30_rank_lte: 30000
+  sales_rank_drops30_gte: 10
+
+rating:
+  current_rating_gte: 45
+  current_review_count_gte: 100
+
+price:
+  # 0 = só o menor preço já registrado. 5 aceita até 5% acima desse mínimo.
+  historic_low_tolerance_percent: 0
+  min_discount_vs_avg90_percent: 20
+  min_tracking_days: 180
+
+schedule:
+  # Relógio de Brasília. A busca é de manhã; a publicação só entre 20h e 22h.
+  timezone: "America/Sao_Paulo"
+  search_time: "06:00"
+  publish_start: "20:00"
+  publish_end: "22:00"
+  posts_per_hour: 3
+  per_niche: 2
+  reserves_per_niche: 2
+
+# Ids confirmados na árvore de Livros da Amazon.com.br. História entra no texto como não ficção.
+niches:
+  - key: ficcao
+    label: "Ficção"
+    category_id: 7872687011
+  - key: nao_ficcao
+    label: "Não ficção"
+    category_id: 7843068011
+  - key: biografia
+    label: "Biografia"
+    category_id: 7841731011
+
+openai:
+  model: "gpt-4.1-mini"
+  max_chars: 180
+
+storage:
+  sqlite_path: "data/promo_livros.sqlite"
+  repost_window_days: 30
+
+logging:
+  file: "logs/promo_livros.log"
+
+whatsapp:
+  # false grava o livro no log e nos 30 dias, sem chamar o WAHA.
+  # true enfileira e dispara na sessão promo-livros (WAHA na porta 4443, painel em esteira.promolivros.org). A esteira do Baby Poupe fica na 3000.
+  enabled: false
+  # Segundos entre um grupo e o próximo. O livro seguinte só sai no horário do relógio.
+  gap_seconds: 45
+  groups:
+    - name: "Black Livros 01"
+      id: "120363430990609445@g.us"
+    - name: "Black Livros 02"
+      id: "120363410393297284@g.us"
+    - name: "Black Livros 03"
+      id: "120363412365496470@g.us"
+
+website:
+  # Destino da mesma oferta no site. Continua false até o site estar no ar.
+  enabled: false
