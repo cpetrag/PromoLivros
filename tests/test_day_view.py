@@ -5,7 +5,12 @@ from promo_livros.day_view import build_day_view
 from promo_livros.models import Dispatch, NicheConfig, PublishSlot, QueuedPost, WhatsAppGroup
 
 
-def _book(position: int, status: str = "ready", title: str = "Sapiens") -> QueuedPost:
+def _book(
+    position: int,
+    status: str = "ready",
+    title: str = "Sapiens",
+    niche_label: str = "Ficção",
+) -> QueuedPost:
     return QueuedPost(
         day="2026-09-27",
         niche_key="ficcao",
@@ -13,7 +18,7 @@ def _book(position: int, status: str = "ready", title: str = "Sapiens") -> Queue
         asin="B000000001",
         title=title,
         author="Autor",
-        niche_label="Ficção",
+        niche_label=niche_label,
         price_cents=3490,
         avg90_cents=5000,
         historic_min_cents=3490,
@@ -82,6 +87,22 @@ class DayViewTests(unittest.TestCase):
         self.assertEqual(view.books[0].groups[1].status_label, "ainda não entrou na fila")
         self.assertTrue(view.books[1].reserve)
         self.assertEqual(view.books[1].title, "Reserva")
+
+    def test_reserve_uses_niche_config_label(self) -> None:
+        view = build_day_view(
+            day="2026-09-27",
+            slots=(PublishSlot(20, 0, "ficcao", 0),),
+            niches=(NicheConfig("ficcao", "Ficção", 1),),
+            per_niche=1,
+            queue=(_book(0), _book(1, title="Reserva", niche_label="")),
+            dispatches=(),
+            saved_groups=(),
+            captions={},
+        )
+        self.assertIsNotNone(view)
+        assert view is not None
+        self.assertTrue(view.books[1].reserve)
+        self.assertEqual(view.books[1].niche_label, "Ficção")
 
 
 if __name__ == "__main__":

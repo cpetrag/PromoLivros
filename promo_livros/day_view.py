@@ -19,6 +19,7 @@ DISPATCH_LABELS = {
     "expirada": "expirada",
 }
 NOT_QUEUED = "ainda não entrou na fila"
+NO_BOOK = "sem livro"
 
 
 @dataclass(frozen=True)
@@ -69,14 +70,15 @@ def build_day_view(
         clock = f"{slot.hour:02d}:{slot.minute:02d}"
         niche_label = labels.get(slot.niche_key, slot.niche_key)
         if row is None:
-            books.append(BookLine(clock, niche_label, "", "", "sem livro", "", (), False))
+            books.append(BookLine(clock, niche_label, "", "", NO_BOOK, "", (), False))
             continue
         books.append(_book_line(clock, niche_label, row, False, dispatches, saved_groups, captions))
     for row in queue:
         if row.position < per_niche:
             continue
+        reserve_label = labels.get(row.niche_key, row.niche_key)
         books.append(
-            _book_line("", row.niche_label, row, True, dispatches, saved_groups, captions)
+            _book_line("", reserve_label, row, True, dispatches, saved_groups, captions)
         )
     return DayView(day=day, books=tuple(books))
 
