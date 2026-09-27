@@ -1,15 +1,16 @@
+import tempfile
 import threading
 import unittest
 from http.server import ThreadingHTTPServer
+from pathlib import Path
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from promo_livros.dashboard import DashboardApp, DashboardHandler
+from promo_livros.dashboard import DashboardApp, DashboardHandler, persist_group_selection
+from promo_livros.groups_file import GroupsFileError, GroupChoice
 from promo_livros.dashboard_auth import SessionStore
 from promo_livros.dashboard_pages import login_page, render_groups, render_today, render_whatsapp
 from promo_livros.day_view import BookLine, DayView, GroupLine
-from promo_livros.groups_file import GroupChoice
-
-
 class PageTests(unittest.TestCase):
     def test_login_page_has_no_queue(self) -> None:
         html = login_page(failed=True)
@@ -85,6 +86,27 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertNotIn("image/png", content_type)
 
+    def test_login_rejects_non_integer_content_length(self) -> None:
+        status, _content_type, _payload = _post_raw(
+            self.server,
+            "/login",
+            headers={"Content-Length": "abc"},
+        )
+        self.assertEqual(status, 400)
+
+    def test_login_rejects_huge_content_length_without_reading_body(self) -> None:
+        status, _content_type, _payload = _post_raw(
+            self.server,
+            "/login",
+            headers={"Content-Length": str(65537)},
+        )
+        self.assertEqual(status, 400)
+
+    def test_get_hoje_works_after_bad_post(self) -> None:
+        _post_raw(self.server, "/login", headers={"Content-Length": "abc"})
+        body = _get(self.server, "/hoje")
+        self.assertIn("Entrar", body)
+
     def setUp(self) -> None:
         book = BookLine(
             clock="20:00",
@@ -115,6 +137,49 @@ class ServerTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.server.shutdown()
         self.server.server_close()
+
+
+class SaveGroupsTests(unittest.TestCase):
+    def test_empty_selection_refuses_when_whatsapp_enabled_in_file(self) -> None:
+        yaml_text = """whatsapp:
+  enabled: true
+  gap_seconds: 45
+  groups:
+    - name: "Black Livros 01"
+      id: "120363430990609445@g.us"
+website:
+  enabled: false
+"""
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "config.yaml"
+            path.write_text(yaml_text, encoding="utf-8")
+            original = path.read_bytes()
+            choices = [GroupChoice("Black Livros 01", "120363430990609445@g.us", True, False)]
+            with self.assertRaises(GroupsFileError):
+                persist_group_selection(path, [], choices)
+            self.assertEqual(path.read_bytes(), original)
+
+
+def _post_raw(
+    server: ThreadingHTTPServer,
+    path: str,
+    *,
+    headers: dict[str, str] | None = None,
+    data: bytes = b"",
+) -> tuple[int, str, bytes]:
+    host, port = server.server_address[:2]
+    request_headers = dict(headers or {})
+    request = Request(
+        f"http://{host}:{port}{path}",
+        data=data,
+        headers=request_headers,
+        method="POST",
+    )
+    try:
+        with urlopen(request) as response:
+            return response.status, response.headers.get("content-type", ""), response.read()
+    except HTTPError as exc:
+        return exc.code, exc.headers.get("content-type", ""), exc.read()
 
 
 def _get(server: ThreadingHTTPServer, path: str, cookie: str | None = None) -> str:

@@ -17,6 +17,7 @@ from promo_livros.models import ConfigError
 HOST = "127.0.0.1"
 PORT = 8787
 COOKIE = "promo_livros_session"
+MAX_POST_BODY = 65536
 
 
 @dataclass
@@ -60,6 +61,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         path = urlparse(self.path).path
         form = _form(self)
+        if form is None:
+            return
         if path == "/login":
             token = self.app.sessions.login(
                 _field(form, "username"),
@@ -150,10 +153,42 @@ def _same_origin(handler: BaseHTTPRequestHandler) -> bool:
     return urlparse(origin).netloc == handler.headers.get("Host", "")
 
 
-def _form(handler: BaseHTTPRequestHandler) -> dict[str, list[str]]:
-    length = int(handler.headers.get("Content-Length", "0") or "0")
+def _form(handler: BaseHTTPRequestHandler) -> dict[str, list[str]] | None:
+    length = _content_length(handler)
+    if length is None:
+        return None
     raw = handler.rfile.read(length).decode("utf-8", errors="replace")
     return parse_qs(raw, keep_blank_values=False)
+
+
+def _content_length(handler: BaseHTTPRequestHandler) -> int | None:
+    raw = handler.headers.get("Content-Length", "0") or "0"
+    try:
+        length = int(raw)
+    except ValueError:
+        handler.send_error(400)
+        return None
+    if length < 0 or length > MAX_POST_BODY:
+        handler.send_error(400)
+        return None
+    return length
+
+
+def whatsapp_enabled_in_file(config_path: Path) -> bool:
+    try:
+        return load_config(config_path).whatsapp_enabled
+    except ConfigError as exc:
+        raise GroupsFileError(f"Configuração: {exc}") from exc
+
+
+def persist_group_selection(
+    config_path: Path,
+    posted_ids: list[str],
+    choices: list[GroupChoice],
+) -> list[tuple[str, str]]:
+    groups = selected_groups(posted_ids, choices)
+    write_groups(config_path, groups, enabled=whatsapp_enabled_in_file(config_path))
+    return groups
 
 
 def _field(form: dict[str, list[str]], name: str) -> str:
@@ -191,7 +226,7 @@ def build_app(config, username: str, password: str) -> DashboardApp:
     from promo_livros.waha import WahaClient, WahaError
 
     sessions = SessionStore()
-    holder = {"groups": config.whatsapp_groups, "enabled": config.whatsapp_enabled}
+    holder = {"groups": config.whatsapp_groups}
 
     def today() -> tuple[str | None, DayView | None]:
         day = service_day(datetime.now(zone(config.schedule.timezone)), config.schedule.timezone)
@@ -244,8 +279,7 @@ def build_app(config, username: str, password: str) -> DashboardApp:
         choices, connected, message = group_form()
         if not connected:
             raise GroupsFileError(message or "Conecte o WhatsApp para ver a lista.")
-        groups = selected_groups(posted_ids, choices)
-        write_groups(Path("config.yaml"), groups, enabled=holder["enabled"])
+        groups = persist_group_selection(Path("config.yaml"), posted_ids, choices)
         holder["groups"] = tuple(WhatsAppGroup(name, chat_id) for name, chat_id in groups)
 
     return DashboardApp(username, password, sessions, today, whatsapp, qr_png, group_form, save)
