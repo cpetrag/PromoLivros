@@ -75,9 +75,11 @@ def replace_groups_block(text: str, groups: list[tuple[str, str]]) -> str:
 
 def write_groups(path: Path, groups: list[tuple[str, str]], *, enabled: bool) -> None:
     validate_groups(groups, enabled=enabled)
-    updated = replace_groups_block(path.read_text(encoding="utf-8"), groups)
+    with path.open(encoding="utf-8", newline="") as handle:
+        updated = replace_groups_block(handle.read(), groups)
     temporary = path.with_suffix(".yaml.tmp")
-    temporary.write_text(updated, encoding="utf-8")
+    with temporary.open("w", encoding="utf-8", newline="") as handle:
+        handle.write(updated)
     temporary.replace(path)
 
 
@@ -98,10 +100,10 @@ def _groups_span(lines: list[str]) -> tuple[int, int]:
         raise GroupsFileError("config.yaml não tem whatsapp.groups.")
     end = start + 1
     while end < len(lines):
-        body = lines[end].split("#", 1)[0]
-        if body.strip() == "":
+        line = lines[end]
+        if line.strip() == "":
             break
-        if body.startswith("    "):
+        if line.startswith("    "):
             end += 1
             continue
         break
