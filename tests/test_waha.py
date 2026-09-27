@@ -4,11 +4,18 @@ from promo_livros.waha import WahaClient, WahaError
 
 
 class _Response:
-    def __init__(self, status_code: int, payload: object, text: str | None = None) -> None:
+    def __init__(
+        self,
+        status_code: int,
+        payload: object,
+        text: str | None = None,
+        headers: dict | None = None,
+    ) -> None:
         self.status_code = status_code
         self._payload = payload
         self.content = b"{}"
         self.text = text if text is not None else ""
+        self.headers = headers or {}
 
     def json(self) -> object:
         if isinstance(self._payload, Exception):
@@ -58,6 +65,30 @@ class WahaClientTests(unittest.TestCase):
             client.send("120363430990609445@g.us", "oi", None)
 
         self.assertTrue(caught.exception.session_down)
+
+    def test_probe_session_raises_when_waha_refuses(self) -> None:
+        http = _Http([_Response(500, {})])
+        client = WahaClient("http://127.0.0.1:4443", "chave", "promo-livros", http=http)
+        with self.assertRaises(WahaError):
+            client.probe_session()
+
+    def test_fetch_qr_png_returns_image_bytes(self) -> None:
+        response = _Response(200, {})
+        response.content = b"\x89PNG\r\n"
+        response.headers = {"content-type": "image/png"}
+        http = _Http([response])
+        client = WahaClient("http://127.0.0.1:4443", "chave", "promo-livros", http=http)
+
+        self.assertEqual(client.fetch_qr_png(), b"\x89PNG\r\n")
+        self.assertIn("/api/promo-livros/auth/qr", http.calls[0][1])
+
+    def test_fetch_qr_png_rejects_json(self) -> None:
+        response = _Response(200, {"status": "WORKING"})
+        response.headers = {"content-type": "application/json"}
+        http = _Http([response])
+        client = WahaClient("http://127.0.0.1:4443", "", "promo-livros", http=http)
+        with self.assertRaises(WahaError):
+            client.fetch_qr_png()
 
 
 if __name__ == "__main__":

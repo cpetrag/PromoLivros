@@ -76,6 +76,40 @@ class WahaClient:
             status = str(payload.get("status") or "")
         return _map_session_status(status)
 
+    def probe_session(self) -> str:
+        """Igual a connection_state, mas deixa o erro subir."""
+        payload = self._request(
+            "GET",
+            f"/api/sessions/{self.session}",
+            timeout=_STATUS_TIMEOUT_SECONDS,
+        )
+        status = ""
+        if isinstance(payload, dict):
+            status = str(payload.get("status") or "")
+        return _map_session_status(status)
+
+    def fetch_qr_png(self) -> bytes:
+        headers = {"accept": "image/png"}
+        if self.api_key:
+            headers["x-api-key"] = self.api_key
+        try:
+            response = self._http.request(
+                "GET",
+                f"{self.base_url}/api/{self.session}/auth/qr",
+                headers=headers,
+                json=None,
+                timeout=_STATUS_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise WahaError("WAHA não respondeu. Confira WAHA_URL.", session_down=True) from exc
+        content_type = ""
+        response_headers = getattr(response, "headers", {}) or {}
+        if hasattr(response_headers, "get"):
+            content_type = str(response_headers.get("content-type") or "")
+        if response.status_code >= 400 or "image/" not in content_type.lower() or not response.content:
+            raise WahaError("WAHA não devolveu o QR.", session_down=False)
+        return bytes(response.content)
+
     def list_groups(self) -> list[WhatsAppGroup]:
         if self.connection_state() != "connected":
             return []
