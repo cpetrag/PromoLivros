@@ -41,8 +41,13 @@ class PageTests(unittest.TestCase):
     def test_whatsapp_qr_only_when_requested(self) -> None:
         qr = render_whatsapp(state="qr", message=None)
         down = render_whatsapp(state="down", message="O WAHA não respondeu.")
-        self.assertIn('/whatsapp/qr', qr)
+        offline = render_whatsapp(state="disconnected", message=None)
+        online = render_whatsapp(state="connected", message=None)
+        self.assertIn("/whatsapp/qr", qr)
         self.assertNotIn("/whatsapp/qr", down)
+        self.assertNotIn("/whatsapp/qr", offline)
+        self.assertNotIn("/whatsapp/qr", online)
+        self.assertIn("Conectado", online)
         self.assertIn("O WAHA não respondeu.", down)
 
     def test_groups_form_marks_missing_and_hides_save_when_offline(self) -> None:
