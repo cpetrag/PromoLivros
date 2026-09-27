@@ -4,9 +4,12 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+import yaml
+
 from promo_livros.models import WhatsAppGroup
 
 _GROUP_ID_RE = re.compile(r"^[0-9-]+@g\.us$")
+_ALLOWED_CONTROL = frozenset("\n\r\t")
 
 
 class GroupsFileError(Exception):
@@ -28,6 +31,9 @@ def validate_groups(groups: list[tuple[str, str]], *, enabled: bool) -> None:
     for name, chat_id in groups:
         if not name.strip():
             raise GroupsFileError("Grupo sem nome.")
+        for char in name:
+            if ord(char) < 32 and char not in _ALLOWED_CONTROL:
+                raise GroupsFileError("Nome de grupo com caractere inválido.")
         if _GROUP_ID_RE.fullmatch(chat_id) is None:
             raise GroupsFileError(f"Id de grupo inválido '{chat_id}'.")
         if chat_id in seen:
@@ -76,11 +82,53 @@ def replace_groups_block(text: str, groups: list[tuple[str, str]]) -> str:
 def write_groups(path: Path, groups: list[tuple[str, str]], *, enabled: bool) -> None:
     validate_groups(groups, enabled=enabled)
     with path.open(encoding="utf-8", newline="") as handle:
-        updated = replace_groups_block(handle.read(), groups)
+        original_text = handle.read()
+    updated = replace_groups_block(original_text, groups)
+    _assert_safe_groups_write(original_text, updated, groups)
     temporary = path.with_suffix(".yaml.tmp")
     with temporary.open("w", encoding="utf-8", newline="") as handle:
         handle.write(updated)
     temporary.replace(path)
+
+
+def _assert_safe_groups_write(
+    original_text: str,
+    updated: str,
+    groups: list[tuple[str, str]],
+) -> None:
+    try:
+        original = yaml.safe_load(original_text)
+        parsed = yaml.safe_load(updated)
+    except yaml.YAMLError as exc:
+        raise GroupsFileError("config.yaml ficaria inválido.") from exc
+    if not isinstance(original, dict) or not isinstance(parsed, dict):
+        raise GroupsFileError("config.yaml ficaria inválido.")
+    original_whatsapp = original.get("whatsapp")
+    parsed_whatsapp = parsed.get("whatsapp")
+    if not isinstance(original_whatsapp, dict) or not isinstance(parsed_whatsapp, dict):
+        raise GroupsFileError("config.yaml ficaria inválido.")
+    if original_whatsapp.get("enabled") != parsed_whatsapp.get("enabled"):
+        raise GroupsFileError("config.yaml mudaria whatsapp.enabled.")
+    saved = _group_pairs_from_parsed(parsed_whatsapp.get("groups"))
+    if saved != groups:
+        raise GroupsFileError("config.yaml não refletiria a lista de grupos gravada.")
+
+
+def _group_pairs_from_parsed(rows: object) -> list[tuple[str, str]]:
+    if rows is None:
+        return []
+    if not isinstance(rows, list):
+        raise GroupsFileError("config.yaml ficaria inválido.")
+    pairs: list[tuple[str, str]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise GroupsFileError("config.yaml ficaria inválido.")
+        name = row.get("name")
+        chat_id = row.get("id")
+        if not isinstance(name, str) or not isinstance(chat_id, str):
+            raise GroupsFileError("config.yaml ficaria inválido.")
+        pairs.append((name, chat_id))
+    return pairs
 
 
 def _groups_span(lines: list[str]) -> tuple[int, int]:
@@ -98,9 +146,10 @@ def _groups_span(lines: list[str]) -> tuple[int, int]:
             break
     if start is None:
         raise GroupsFileError("config.yaml não tem whatsapp.groups.")
+    groups_indent = _line_indent(lines[start])
     end = start + 1
     while end < len(lines):
-        if _is_yaml_key_boundary(lines[end]):
+        if _is_yaml_key_boundary(lines[end], groups_indent=groups_indent):
             break
         end += 1
     while end > start + 1 and _is_blank_or_comment_only(lines[end - 1]):
@@ -108,20 +157,31 @@ def _groups_span(lines: list[str]) -> tuple[int, int]:
     return start, end
 
 
+def _line_indent(line: str) -> int:
+    return len(line) - len(line.lstrip())
+
+
 def _is_blank_or_comment_only(line: str) -> bool:
     return line.split("#", 1)[0].strip() == ""
 
 
-def _is_yaml_key_boundary(line: str) -> bool:
+def _is_yaml_key_boundary(line: str, *, groups_indent: int) -> bool:
     code = line.split("#", 1)[0]
     if not code.strip():
         return False
     stripped = line.lstrip()
     if stripped.startswith("#"):
         return False
-    indent = len(line) - len(stripped)
-    return indent in (0, 2)
+    if stripped.startswith("-"):
+        return False
+    indent = _line_indent(line)
+    return indent <= groups_indent
 
 
 def _yaml_string(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"')
+    escaped = value.replace("\\", "\\\\")
+    escaped = escaped.replace('"', '\\"')
+    escaped = escaped.replace("\n", "\\n")
+    escaped = escaped.replace("\r", "\\r")
+    escaped = escaped.replace("\t", "\\t")
+    return escaped

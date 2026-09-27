@@ -2,6 +2,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import yaml
+
 from promo_livros.groups_file import (
     GroupsFileError,
     group_choices,
@@ -74,6 +76,29 @@ website:
 
 GROUP_C = ("Grupo C", "120363412365496470@g.us")
 
+YAML_NICHES_STYLE_GROUPS = """whatsapp:
+  enabled: false
+  gap_seconds: 45
+  groups:
+  - name: "OldOne"
+    id: "120363430990609445@g.us"
+  - name: "OldTwo"
+    id: "120363410393297284@g.us"
+website:
+  enabled: false
+"""
+
+YAML_COMMENT_BEFORE_GAP = """whatsapp:
+  enabled: false
+  groups:
+  - name: "Velho"
+    id: "120363430990609445@g.us"
+  # intervalo entre grupos
+  gap_seconds: 45
+website:
+  enabled: false
+"""
+
 
 class GroupsFileTests(unittest.TestCase):
     def test_replaces_only_the_groups_block(self) -> None:
@@ -123,6 +148,60 @@ class GroupsFileTests(unittest.TestCase):
         self.assertNotIn("Velho", updated)
         self.assertIn("\n\nwebsite:", updated)
         self.assertIn("website:", updated)
+
+    def test_replaces_niches_style_groups_list(self) -> None:
+        updated = replace_groups_block(
+            YAML_NICHES_STYLE_GROUPS,
+            [("Novo", "120363412365496470@g.us")],
+        )
+        self.assertNotIn("OldOne", updated)
+        self.assertNotIn("OldTwo", updated)
+        self.assertIn("gap_seconds: 45", updated)
+        self.assertIn("website:", updated)
+        parsed = yaml.safe_load(updated)
+        groups = parsed["whatsapp"]["groups"]
+        self.assertEqual(groups[0]["name"], "Novo")
+
+    def test_keeps_comment_before_gap_seconds(self) -> None:
+        updated = replace_groups_block(
+            YAML_COMMENT_BEFORE_GAP,
+            [("Novo", "120363430990609445@g.us")],
+        )
+        self.assertNotIn("Velho", updated)
+        self.assertIn("# intervalo entre grupos", updated)
+        self.assertIn("gap_seconds: 45", updated)
+
+    def test_write_groups_escapes_newline_in_name(self) -> None:
+        name = "Linha\nDois"
+        content = (
+            "whatsapp:\n"
+            "  enabled: false\n"
+            "  groups:\n"
+            '    - name: "Velho"\n'
+            '      id: "120363430990609445@g.us"\n'
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "config.yaml"
+            path.write_text(content, encoding="utf-8", newline="")
+            write_groups(path, [(name, "120363430990609445@g.us")], enabled=False)
+            parsed = yaml.safe_load(path.read_text(encoding="utf-8"))
+        self.assertEqual(parsed["whatsapp"]["groups"][0]["name"], name)
+
+    def test_write_groups_rejects_null_in_name_without_touching_file(self) -> None:
+        content = (
+            "whatsapp:\n"
+            "  enabled: false\n"
+            "  groups:\n"
+            '    - name: "Velho"\n'
+            '      id: "120363430990609445@g.us"\n'
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "config.yaml"
+            path.write_text(content, encoding="utf-8", newline="")
+            before = path.read_bytes()
+            with self.assertRaises(GroupsFileError):
+                write_groups(path, [("bad\x00name", "120363430990609445@g.us")], enabled=False)
+            self.assertEqual(path.read_bytes(), before)
 
     def test_write_groups_keeps_lf_line_endings(self) -> None:
         content = (
