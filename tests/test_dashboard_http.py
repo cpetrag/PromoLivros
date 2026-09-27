@@ -155,8 +155,9 @@ website:
             path.write_text(yaml_text, encoding="utf-8")
             original = path.read_bytes()
             choices = [GroupChoice("Black Livros 01", "120363430990609445@g.us", True, False)]
-            with self.assertRaises(GroupsFileError):
+            with self.assertRaises(GroupsFileError) as caught:
                 persist_group_selection(path, [], choices)
+            self.assertIn("lista de grupos ficou vazia", str(caught.exception))
             self.assertEqual(path.read_bytes(), original)
 
 

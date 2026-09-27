@@ -7,6 +7,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import yaml
+
 from promo_livros.config import load_config
 from promo_livros.dashboard_auth import SessionStore
 from promo_livros.dashboard_pages import login_page, render_groups, render_today, render_whatsapp
@@ -176,9 +178,21 @@ def _content_length(handler: BaseHTTPRequestHandler) -> int | None:
 
 def whatsapp_enabled_in_file(config_path: Path) -> bool:
     try:
-        return load_config(config_path).whatsapp_enabled
-    except ConfigError as exc:
-        raise GroupsFileError(f"Configuração: {exc}") from exc
+        with config_path.open(encoding="utf-8") as handle:
+            raw = yaml.safe_load(handle)
+    except OSError as exc:
+        raise GroupsFileError("Não foi possível ler config.yaml.") from exc
+    except yaml.YAMLError as exc:
+        raise GroupsFileError("config.yaml não pôde ser lido.") from exc
+    if not isinstance(raw, dict):
+        raise GroupsFileError("config.yaml não pôde ser lido.")
+    whatsapp = raw.get("whatsapp")
+    if not isinstance(whatsapp, dict):
+        raise GroupsFileError("config.yaml não tem whatsapp.")
+    enabled = whatsapp.get("enabled")
+    if not isinstance(enabled, bool):
+        raise GroupsFileError("whatsapp.enabled precisa ser true ou false.")
+    return enabled
 
 
 def persist_group_selection(
