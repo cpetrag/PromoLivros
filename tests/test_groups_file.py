@@ -63,6 +63,15 @@ website:
   enabled: false
 """
 
+YAML_BLANK_BEFORE_WEBSITE = """whatsapp:
+  groups:
+    - name: "Velho"
+      id: "120363430990609445@g.us"
+
+website:
+  enabled: false
+"""
+
 GROUP_C = ("Grupo C", "120363412365496470@g.us")
 
 
@@ -104,6 +113,15 @@ class GroupsFileTests(unittest.TestCase):
         self.assertIn('name: "Grupo C"', updated)
         self.assertNotIn('"A"', updated)
         self.assertNotIn('"B"', updated)
+        self.assertIn("website:", updated)
+
+    def test_keeps_blank_line_before_next_section(self) -> None:
+        updated = replace_groups_block(
+            YAML_BLANK_BEFORE_WEBSITE,
+            [("Black Livros 01", "120363430990609445@g.us")],
+        )
+        self.assertNotIn("Velho", updated)
+        self.assertIn("\n\nwebsite:", updated)
         self.assertIn("website:", updated)
 
     def test_write_groups_keeps_lf_line_endings(self) -> None:

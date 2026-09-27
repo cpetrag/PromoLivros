@@ -103,7 +103,13 @@ def _groups_span(lines: list[str]) -> tuple[int, int]:
         if _is_yaml_key_boundary(lines[end]):
             break
         end += 1
+    while end > start + 1 and _is_blank_or_comment_only(lines[end - 1]):
+        end -= 1
     return start, end
+
+
+def _is_blank_or_comment_only(line: str) -> bool:
+    return line.split("#", 1)[0].strip() == ""
 
 
 def _is_yaml_key_boundary(line: str) -> bool:
