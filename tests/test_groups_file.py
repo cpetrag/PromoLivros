@@ -38,6 +38,33 @@ website:
   enabled: false
 """
 
+YAML_TWO_SPACE_COMMENT_BETWEEN = """# topo
+whatsapp:
+  # não ligar daqui
+  enabled: false
+  groups:
+    - name: "A"
+      id: "120363430990609445@g.us"
+  # pausado
+    - name: "B"
+      id: "120363410393297284@g.us"
+website:
+  enabled: false
+"""
+
+YAML_BLANK_LINE_BETWEEN = """whatsapp:
+  groups:
+    - name: "A"
+      id: "120363430990609445@g.us"
+
+    - name: "B"
+      id: "120363410393297284@g.us"
+website:
+  enabled: false
+"""
+
+GROUP_C = ("Grupo C", "120363412365496470@g.us")
+
 
 class GroupsFileTests(unittest.TestCase):
     def test_replaces_only_the_groups_block(self) -> None:
@@ -62,6 +89,22 @@ class GroupsFileTests(unittest.TestCase):
         self.assertNotIn("Primeiro", updated)
         self.assertNotIn("Segundo", updated)
         self.assertNotIn("comentário no meio da lista", updated)
+
+    def test_span_includes_groups_after_two_space_comment(self) -> None:
+        updated = replace_groups_block(YAML_TWO_SPACE_COMMENT_BETWEEN, [GROUP_C])
+        self.assertIn("# não ligar daqui", updated)
+        self.assertIn('name: "Grupo C"', updated)
+        self.assertNotIn('"A"', updated)
+        self.assertNotIn('"B"', updated)
+        self.assertNotIn("pausado", updated)
+        self.assertIn("website:", updated)
+
+    def test_span_includes_groups_after_blank_line(self) -> None:
+        updated = replace_groups_block(YAML_BLANK_LINE_BETWEEN, [GROUP_C])
+        self.assertIn('name: "Grupo C"', updated)
+        self.assertNotIn('"A"', updated)
+        self.assertNotIn('"B"', updated)
+        self.assertIn("website:", updated)
 
     def test_write_groups_keeps_lf_line_endings(self) -> None:
         content = (

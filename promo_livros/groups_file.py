@@ -100,14 +100,21 @@ def _groups_span(lines: list[str]) -> tuple[int, int]:
         raise GroupsFileError("config.yaml não tem whatsapp.groups.")
     end = start + 1
     while end < len(lines):
-        line = lines[end]
-        if line.strip() == "":
+        if _is_yaml_key_boundary(lines[end]):
             break
-        if line.startswith("    "):
-            end += 1
-            continue
-        break
+        end += 1
     return start, end
+
+
+def _is_yaml_key_boundary(line: str) -> bool:
+    code = line.split("#", 1)[0]
+    if not code.strip():
+        return False
+    stripped = line.lstrip()
+    if stripped.startswith("#"):
+        return False
+    indent = len(line) - len(stripped)
+    return indent in (0, 2)
 
 
 def _yaml_string(value: str) -> str:
