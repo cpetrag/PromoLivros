@@ -17,8 +17,12 @@ class SessionStore:
         expected_username: str,
         expected_password: str,
     ) -> str | None:
-        user_ok = hmac.compare_digest(username, expected_username)
-        password_ok = hmac.compare_digest(password, expected_password)
+        user_ok = hmac.compare_digest(
+            username.encode("utf-8"), expected_username.encode("utf-8")
+        )
+        password_ok = hmac.compare_digest(
+            password.encode("utf-8"), expected_password.encode("utf-8")
+        )
         if not (user_ok and password_ok):
             return None
         token = secrets.token_urlsafe(32)
