@@ -237,6 +237,18 @@ No horário do livro, a fila `dispatches` ganha uma linha por grupo de `whatsapp
 
 `python -m promo_livros --groups` lista os grupos da sessão. `whatsapp.enabled` está em `false`: a noite só escreve o log e grava o livro nos 30 dias. Os grupos no YAML são Black Livros 01, 02 e 03. O número novo ainda precisa entrar neles. Os ids continuam os mesmos depois que ele entra.
 
+## Dashboard
+
+Na pasta do projeto, no Mac (`/Volumes/HD 1Tb/Vibecoding/Promo Livros`):
+
+```
+python -m promo_livros.dashboard
+```
+
+A página escuta em `127.0.0.1:8787`. Sem `DASHBOARD_USERNAME` e `DASHBOARD_PASSWORD` no `.env`, o processo não sobe. Hoje mostra a fila e não grava no SQLite. WhatsApp mostra a sessão `promo-livros` e o QR quando o WAHA pede pareamento. Grupos grava só a lista em `config.yaml`. O agendador só passa a usar essa lista na próxima subida.
+
+No túnel `promo-livros`, antes da regra final, a entrada nova é o hostname `painel.promolivros.org` com serviço `http://127.0.0.1:8787`. O nome `painel` aponta para o mesmo túnel de `esteira`. `esteira.promolivros.org/dashboard` continua sendo o painel do WAHA. A sessão em `~/waha/sessions-livros` não muda de disco neste passo.
+
 ## O que foi feito
 
 Curadoria, em `n:\Vibecoding\Promo Livros`:
