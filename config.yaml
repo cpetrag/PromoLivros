@@ -38,13 +38,13 @@ price:
   min_tracking_days: 180
 
 schedule:
-  # Relógio de Brasília. A busca é de manhã; a publicação só entre 20h e 22h.
+  # Relógio de Brasília. A busca é às 6h; a publicação vai de 8h às 22h.
   timezone: "America/Sao_Paulo"
   search_time: "06:00"
-  publish_start: "20:00"
+  publish_start: "08:00"
   publish_end: "22:00"
   posts_per_hour: 3
-  per_niche: 2
+  per_niche: 14
   reserves_per_niche: 2
 
 # Ids confirmados na árvore de Livros da Amazon.com.br. História entra no texto como não ficção.

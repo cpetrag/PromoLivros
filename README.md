@@ -1,6 +1,6 @@
 # Promo Livros
 
-Busca livros em oferta na Amazon.com.br pelo [Product Finder do Keepa](https://keepa.com/api-docs/product-finder.html) e faz a curadoria sozinho. O disparo usa um WAHA só deste bot, no Mac. O site continua desligado.
+A fila do dia sai da Curadoria do painel: a pessoa marca livros na Amazon e no Mercado Livre. Cada post leva uma oferta de cada loja, e a página mostra quem vai com quem antes de definir a fila. O disparo usa um WAHA só deste bot, no Mac. O site continua desligado. A busca automática do Keepa existe no código, mas não monta a fila enquanto a curadoria estiver em modo manual.
 
 ## Estrutura
 
@@ -15,8 +15,16 @@ promo_livros/
   filters.py           critérios reaplicados em cima do /product
   price_history.py     "menor preço em N dias"
   synopsis.py          sinopse que o Keepa devolve
-  blurb.py             frase de uma linha via OpenAI
-  formatter.py         texto da mensagem, no formato do WhatsApp
+  blurb.py             frase de até 12 palavras; a fila usa a pesquisa na internet
+  book_match.py        avisa o mesmo título nas duas lojas e forma o par de cada post
+  pick_plan.py         a fila prevista da Curadoria: horário, oferta da Amazon e a do Mercado Livre
+  link_offer.py        lê título, preço e capa de um link avulso da Amazon ou do Mercado Livre
+  catalog.py           CSVs, marcação e montagem da fila
+  ml_links.py          link de afiliado do Mercado Livre e leitura de foto
+  post_copy.py         legenda do WhatsApp, com um bloco por loja
+  dashboard.py         painel em 127.0.0.1:8787
+  dashboard_curation.py  página da Curadoria
+  formatter.py         texto da mensagem antiga, no formato do WhatsApp
   waha.py              conexão HTTP com o WAHA dos livros
   dispatch.py          fila de disparo para os grupos
   whatsapp_poster.py   adaptador do envio
@@ -61,7 +69,7 @@ WAHA_DASHBOARD_USERNAME=
 WAHA_DASHBOARD_PASSWORD=
 ```
 
-Os limites (ranking, nota, desconto, tolerância, horários e nichos) ficam no `config.yaml`. `whatsapp.enabled` fica em `false` até você querer disparar. `website.enabled` continua em `false`. Sem `OPENAI_API_KEY`, a mensagem sai sem a frase sobre o livro.
+Os limites (ranking, nota, desconto, tolerância, horários e nichos) ficam no `config.yaml`. `whatsapp.enabled` fica em `false` até você querer disparar. `website.enabled` continua em `false`. Sem `OPENAI_API_KEY`, o post sai sem a linha da resenha. O painel ainda precisa de `DASHBOARD_USERNAME` e `DASHBOARD_PASSWORD`.
 
 ## Categoria Livros
 
@@ -131,7 +139,7 @@ A oferta usada na mensagem é a da Amazon quando ela está em estoque (`availabi
 
 Sempre na pasta do projeto, com o venv ativo.
 
-A busca roda uma vez por dia, às 6h, no fuso de Brasília. À noite saem três publicações por hora, às 20:00, 20:20, 20:40, 21:00, 21:20 e 21:40. Às 22h para. Cada horário é um nicho diferente: ficção, não ficção (História) e biografia, e depois de novo. Dois livros de cada, mais dois reservas por nicho, para o caso de o preço subir antes da hora.
+A busca roda uma vez por dia, às 6h, no fuso de Brasília. As publicações vão das 8h às 22h, três por hora, um nicho por vez: ficção, não ficção (História) e biografia, e depois de novo. O último horário é 21:40. Às 22h para. São 14 livros de cada nicho nessa grade, mais dois reservas, para o caso de o preço subir antes da hora. Horário sem livro fica vazio.
 
 Montar a fila de hoje e ver as mensagens, sem gravar:
 
@@ -161,7 +169,7 @@ Se o processo sobe depois das 6h e ainda não existe fila no dia, ele monta na h
 
 ## Mensagem
 
-O texto já sai no formato do WhatsApp. A frase do meio é um resumo de uma linha feito pela OpenAI a partir da sinopse que o Keepa devolve. O Keepa não traz o texto das resenhas dos leitores. Se a sinopse vier vazia ou a OpenAI falhar, essa linha some e o resto da mensagem segue.
+O texto abaixo é o da fila automática do Keepa. A fila da Curadoria usa outro formato, com um bloco por loja: está em "Legenda". Na fila automática, a frase do meio é um resumo de uma linha feito pela OpenAI a partir da sinopse que o Keepa devolve. O Keepa não traz o texto das resenhas dos leitores. Se a sinopse vier vazia ou a OpenAI falhar, essa linha some e o resto da mensagem segue.
 
 ```
 📚 *Título do livro*
@@ -173,7 +181,7 @@ R$ YY,YY. Menor preço em 214 dias.
 https://www.amazon.com.br/dp/ASIN?tag=sua-tag
 ```
 
-O preço é o da oferta escolhida (Amazon ou Buy Box). "Menor preço em N dias" é o tempo desde que um valor mais baixo deixou de valer. A capa vai junto. O link usa `AMAZON_AFFILIATE_TAG`. Se a tag estiver vazia, o link sai sem ela e o log avisa.
+O preço é o da oferta escolhida (Amazon ou Buy Box). "Menor preço em N dias" é o tempo desde que um valor mais baixo deixou de valer. A capa vai junto. O link dos posts que ainda não foram para nenhum grupo sai da API local de afiliado (`amz-link-api`, contrato em `amz-link-api/API.md`). A tag é `AMAZON_AFFILIATE_TAG`. O texto usa o campo `url` da API, em geral um `link.amazon`. Post que já saiu para um grupo fica com o link que foi enviado. Sem `AMZ_TOKEN` no `.env`, o link continua `https://www.amazon.com.br/dp/ASIN?tag=`.
 
 Na hora de cada publicação o bot consulta o preço de novo. Se subiu, ou se o livro deixou de passar na régua, ele é pulado e entra o reserva do mesmo nicho.
 
@@ -239,15 +247,203 @@ No horário do livro, a fila `dispatches` ganha uma linha por grupo de `whatsapp
 
 ## Dashboard
 
-Na pasta do projeto, no Mac (`/Volumes/HD 1Tb/Vibecoding/Promo Livros`):
+Na pasta do projeto, no Mac (`/Volumes/HD 1Tb/Vibecoding/Promo Livros`), com o Python do venv `promo-livros-venv`:
 
 ```
-python -m promo_livros.dashboard
+/Volumes/HD 1Tb/Vibecoding/promo-livros-venv/bin/python -m promo_livros.dashboard
 ```
 
-A página escuta em `127.0.0.1:8787`. Sem `DASHBOARD_USERNAME` e `DASHBOARD_PASSWORD` no `.env`, o processo não sobe. Hoje mostra a fila e não grava no SQLite. WhatsApp mostra a sessão `promo-livros` e o QR quando o WAHA pede pareamento. Grupos grava só a lista em `config.yaml`. O agendador só passa a usar essa lista na próxima subida.
+Não use o Python do Homebrew: ele não tem o PyYAML. O `ps` mostra o caminho do Homebrew mesmo quando o processo foi o do venv.
 
-No túnel `promo-livros`, antes da regra final, a entrada nova é o hostname `painel.promolivros.org` com serviço `http://127.0.0.1:8787`. O nome `painel` aponta para o mesmo túnel de `esteira`. `esteira.promolivros.org/dashboard` continua sendo o painel do WAHA. A sessão em `~/waha/sessions-livros` não muda de disco neste passo.
+A página escuta em `127.0.0.1:8787`. Sem `DASHBOARD_USERNAME` e `DASHBOARD_PASSWORD` no `.env`, o processo não sobe. O painel é [painel.promolivros.org](https://painel.promolivros.org). O código novo só aparece depois de reiniciar esse processo. O envio dos posts é outro processo (`promo-livros-envio`) e não sobe junto. Reiniciar o painel apaga a sessão: é preciso entrar de novo.
+
+No túnel `promo-livros` (`~/.cloudflared/promo-livros.yml`), `painel.promolivros.org` aponta para `http://127.0.0.1:8787`. `esteira.promolivros.org/dashboard` continua sendo o painel do WAHA.
+
+| Página | Caminho | O que faz |
+| --- | --- | --- |
+| Hoje | `/hoje` | Fila, horários e membros dos grupos |
+| Enviados | `/enviados` | O que já saiu |
+| WhatsApp | `/whatsapp` | Sessão e QR |
+| Grupos | `/grupos` | Lista gravada no `config.yaml` |
+| Assinaturas | `/assinaturas` | Linha final da legenda, uma por post, em rodízio |
+| Configurações | `/configuracoes` | Cookies e tag do Mercado Livre |
+| Curadoria | `/curadoria` | Marcação dos livros e montagem da fila |
+
+O menu Configurações só aparece depois do login. A página de login não tem navegação.
+
+Um 502 do Cloudflare, com o túnel no ar, em geral é o processo da porta 8787 caído ou com a conexão do SQLite quebrada. O arquivo `data/promo_livros.sqlite` pode estar íntegro e mesmo assim a conexão antiga responder `file is not a database`. Reiniciar só o painel abre outra conexão. Não abra esse SQLite por outro programa enquanto o painel estiver no ar: o banco fica no volume que o Windows também enxerga, e o WAL não aguenta dois clientes.
+
+## Curadoria
+
+A página é [painel.promolivros.org/curadoria](https://painel.promolivros.org/curadoria). Há duas abas.
+
+| Aba | Arquivo | Identificador |
+| --- | --- | --- |
+| Amazon | `CSV Atualizado/amazon_livros_*.csv` | ASIN de 10 caracteres |
+| Mercado Livre | `CSV Atualizado/mercadolivre-livros.csv` | id `MLB` seguido de dígitos, na coluna `asin` |
+
+Na virada do dia (meia-noite em São Paulo) as marcações saem. Sempre que o CSV da pasta muda, a Curadoria recarrega esse arquivo sozinha — na abertura da página ou ao subir o painel — e as marcações daquela loja saem junto. O botão "Importar os CSVs da pasta" e um CSV enviado do computador fazem a mesma troca na hora.
+
+O checkbox marca aquele livro naquela loja. Marcar na Amazon não marca o anúncio do Mercado Livre.
+
+A **fila prevista**, no topo da página, é o que vai acontecer: uma linha por post, com o horário, a oferta da Amazon e a do Mercado Livre. Ela vem do servidor a cada marcação, então as duas abas aparecem ali mesmo sem trocar de aba.
+
+| Controle na fila prevista | O que faz |
+| --- | --- |
+| ↑ e ↓ | Move o livro na ordem da loja dele, trocando com quem ele divide o post |
+| ✕ | Desmarca o livro |
+| `sem oferta da Amazon` | Esse post vai sair só com a outra loja |
+
+A ordem dentro de cada loja é a ordem dos cliques, gravada em `pick_seq`. O primeiro marcado na Amazon vai com o primeiro marcado no Mercado Livre. No card do livro, a linha azul mostra o horário e com quem ele sai.
+
+O intervalo entre posts fica em "Minutos entre posts" (de 5 a 180), gravado em `send_interval_minutes`. Salvar o intervalo não mexe nos horários que já estão na fila. Só o próximo "Definir a fila" usa o número novo.
+
+"Definir a fila" cancela os posts do dia que ainda estão agendados e monta de novo. Os já enviados e os que falharam ficam. Entram no máximo 60 posts, nos horários que ainda cabem depois de agora. Livro sem preço não entra. O botão demora: baixa as capas e pede os links de afiliado antes de trocar de página.
+
+Cada post vale para uma data e uma hora. Na virada do dia, o que ficou agendado no dia anterior sai da fila. O que já foi enviado permanece em Enviados. A tela de hoje começa vazia até a próxima "Definir a fila".
+
+Enquanto o painel sobe, ele grava `curation=manual`. Com isso, o job das 5h (`scripts/fila_do_dia.py`) acorda, registra que a curadoria é manual e sai sem crawler e sem Keepa.
+
+### Ordenar e filtrar
+
+Os controles ficam acima da grade e valem nas duas abas. A escolha fica no navegador, separada por aba.
+
+| Controle | Efeito |
+| --- | --- |
+| Ordenar por | Ordem do CSV, maior desconto, menor preço, maior preço, maior economia em reais, título de A a Z |
+| Desconto mínimo | Qualquer, ou 20% a 70% |
+| Preço até (R$) | Esconde o que passa desse valor |
+| Categoria | Uma categoria do CSV, com a contagem ao lado |
+| Só marcados | Só os checkboxes ligados |
+| Ocultar infantis | Esconde livro com Infantil no título ou no caminho da categoria. A marcação dele continua, se já estava ligada |
+| Ver produto | Abre a página do anúncio, fora do painel, para conferir |
+| Só menor preço em 365 dias | A badge do CSV da Amazon. O CSV do Mercado Livre não preenche essa coluna |
+| Buscar | Título ou categoria |
+| Limpar filtros | Volta à ordem do CSV e tira os recortes |
+
+Na aba Mercado Livre a categoria não separa assunto: o crawler grava todos como "Português".
+
+### Como os dois títulos entram no mesmo post
+
+`pair_posts`, em `promo_livros/book_match.py`, percorre os marcados na Amazon na ordem dos cliques. Para cada um, pega o próximo marcado no Mercado Livre cujo título não é o mesmo. O que sobra de uma loja vira post só daquela loja. `pick_plan.plan_rows` é a mesma função com os horários ao lado, e é o que a página mostra.
+
+O mesmo título não ocupa os dois lugares do post. O aviso "Existe na Amazon" ou "Existe no Mercado Livre" no card é só o preço do mesmo título na outra loja: não marca esse anúncio. Um kit não é tratado como o livro avulso nessa comparação.
+
+Exemplo: Dom Casmurro marcado na Amazon e Memórias do Cárcere no Mercado Livre. Os dois saem no mesmo post, cada um com o próprio título, preço, desconto e link.
+
+Livro sem preço não entra na fila nem aparece na fila prevista.
+
+### Legenda
+
+`promo_livros/post_copy.py` escreve um bloco por loja. A Amazon vem primeiro. Quando há Mercado Livre, o link da Amazon também leva o nome da loja. A assinatura entra uma vez no fim.
+
+```
+📖 *Dom Casmurro*
+ℹ️ _Um homem ciumento relê a própria juventude no Rio antigo._
+💲 R$ 12,00, (40%) menor preço dos últimos 365 dias
+
+🔗 Amazon: https://link.amazon/...
+
+📖 *Memórias do Cárcere*
+ℹ️ _O relato de Graciliano Ramos sobre os anos de prisão._
+💲 R$ 28,00, (45% de desconto)
+
+🔗 Mercado Livre: https://meli.la/...
+
+ℹ️ Assine o Kindle Unlimited com até 3 meses grátis: https://link.amazon/...
+```
+
+A linha do preço usa "menor preço dos últimos 365 dias" quando o CSV traz essa marca. Sem a marca, e havendo desconto, fica "(45% de desconto)". O percentual é o calculado entre preço e preço de lista, não o número do badge do CSV.
+
+O card do post mostra as duas capas quando o post tem as duas lojas.
+
+### Post montado a partir de um link
+
+"Programar post", em `/hoje`, tem dois blocos de oferta. Em cada um, cole o link e clique em **Puxar dados**: `promo_livros/link_offer.py` lê título, preço, preço de lista e capa, e preenche os campos, que continuam editáveis. Com os dois blocos preenchidos o post sai igual aos da Curadoria, com a Amazon primeiro. Com um só, sai de uma loja.
+
+A primeira tentativa não sai da máquina: se o ASIN ou o id MLB do link estiver no CSV já importado, o dado vem de lá, na hora, com o preço e a capa daquele arquivo. Só quando o link é de fora do CSV o painel vai à loja:
+
+| Loja | De onde vem o dado |
+| --- | --- |
+| Mercado Livre | Com os cookies de Configurações, `www.mercadolivre.com.br/p/api/items/MLB…`; depois `api.mercadolibre.com/items/MLB…`; por último a página do anúncio |
+| Amazon | A página do produto; se a Amazon recusar a leitura simples, o Playwright abre a página |
+
+O Mercado Livre não entrega anúncio para quem não tem sessão: a API pública responde HTTP 403 e a página vem vazia, até no navegador sem interface. Então link do Mercado Livre fora do CSV só é lido com os cookies de Configurações preenchidos; sem eles o aviso diz isso.
+
+Só endereços da Amazon e do Mercado Livre são buscados, sempre em `https`. Qualquer outro link é recusado antes de qualquer requisição. A capa só é aceita do CDN da loja. Sem título ou sem preço o painel avisa, em vez de montar post pela metade.
+
+### Resenha
+
+A linha `ℹ️ _…_` é `OpenAIBlurb.research`, em `promo_livros/blurb.py`. Modelo no `config.yaml`: `gpt-4.1-mini`. A chave é `OPENAI_API_KEY`.
+
+Na hora de definir a fila, e de novo na subida do painel para posts agendados que ainda estão sem frase, o código pede uma frase de no máximo 12 palavras. A chamada principal é a Responses API (`/v1/responses`) com a ferramenta `web_search`. Se essa busca falha, o código lê trechos da Wikipédia em português e pede a frase só com esses trechos. Se o livro não aparece, a linha fica de fora. Não há frase inventada no lugar.
+
+Entra na legenda uma frase de 4 a 12 palavras, com ponto final, sem preço, desconto, frete ou nota. Frase aceita fica em `data/blurb_cache.json` para o mesmo título não ser pesquisado de novo. Falha não entra no cache. Chave recusada (HTTP 401 ou 403) interrompe as próximas pesquisas; os posts seguem sem a linha. Sem `OPENAI_API_KEY`, o painel avisa no log e não chama a API.
+
+Post já enviado não é reescrito.
+
+`OpenAIBlurb.pitch` continua no código da fila antiga do Keepa. Ele usa título e sinopse, e o teste trava o texto desse prompt. A Curadoria não chama `pitch`.
+
+### Fotos
+
+A capa da Amazon é `https://m.media-amazon.com/images/P/{asin}.jpg`.
+
+A foto do Mercado Livre não é buscada no site na hora de abrir a Curadoria. O anúncio manda o servidor para um captcha, e a API pública de itens responde 403. A foto vem do CSV, coluna `imagem`, gravada pelo crawler quando ele lê a vitrine. O painel só aceita URL `https://http2.mlstatic.com/D_….jpg|jpeg|webp|png`. Outro endereço é descartado.
+
+O card da Curadoria usa essa URL direto. O card do post baixa a mesma URL. Sem `imagem`, o card do Mercado Livre fica vazio, a menos que o mesmo título exista na Amazon: aí a capa da Amazon aparece como apoio, e o texto da página lembra que a foto do anúncio depende do CSV.
+
+### Crawler do Mercado Livre
+
+O gerador é `~/ml-crawler/crawl_clipboard.py`, no Mac. Ele abre a lista de livros físicos em português, com frete Full e desconto de 50% a 100%, no Chrome já logado, copia o código da página e extrai os cards. A cópia anterior à coluna `imagem` está em `~/ml-crawler/crawl_clipboard.py.bak-20260929`.
+
+Cada execução grava quatro CSVs, com `;`, aspas em todos os campos e UTF-8 com BOM:
+
+- `~/ml-crawler/mercadolivre-livros.csv`
+- `~/ml-crawler/mercadolivre_livros_AAAA-MM-DD.csv`
+- `/Volumes/HD 1Tb/Vibecoding/Promo Livros/CSV Atualizado/mercadolivre-livros.csv`
+- o mesmo nome com a data, na mesma pasta
+
+Colunas: `posicao`, `titulo`, `autor`, `categoria`, `categoria_caminho`, `formato`, `preco`, `preco_de`, `menor_preco_365`, `badges`, `categoria_mais_vendido`, `asin`, `link`, `imagem`. A coluna `asin` aqui é o id `MLB…`, não um ASIN da Amazon. `menor_preco_365` sai vazio. A foto é o `img.poly-component__picture` do card; se o `src` for placeholder, vale o `data-src` ou o `srcSet`.
+
+Quando o CSV novo cai na pasta, a Curadoria passa a usá-lo na próxima abertura da página (ou ao subir o painel) e as marcações daquela lista saem. "Importar os CSVs da pasta" faz a mesma leitura na hora.
+
+### Links de afiliado
+
+Amazon: a API local `amz-link-api` (contrato em `amz-link-api/API.md`). Sem `AMZ_TOKEN`, o link fica `https://www.amazon.com.br/dp/ASIN?tag=`.
+
+Mercado Livre: `POST https://www.mercadolivre.com.br/affiliate-program/api/v2/affiliates/createLink`, o mesmo caminho do Gerador de Links (`lib/affiliate/converters.ts`). O corpo é `{ "urls": ["…"], "tag": "…" }`. A resposta usada é `urls[0].short_url`, em geral `https://meli.la/…`.
+
+Em Configurações, cole o export JSON do Cookie-Editor (cookies de `mercadolivre.com.br` ou `mercadolibre.com`) e a tag. A sessão só vale com cookie e com o cookie `_csrf`. Na hora de converter, o painel abre `https://www.mercadolivre.com.br/afiliados/linkbuilder` e usa o `csrf-token` novo da página. A tag padrão, se o campo vier vazio, é `cpetrag1971`.
+
+A API recusa `https://produto.mercadolivre.com.br/MLB-…` com a mensagem "URL not allowed in affiliates program". O código troca esse endereço por `https://www.mercadolivre.com.br/p/MLB{id}` antes de chamar. Um link `www.mercadolivre.com.br/…` do CSV segue como está, sem a query. Salvar as configurações converte os links dos posts que ainda não saíram. A subida do painel faz o mesmo. Se a API recusar, o endereço do produto permanece e o log registra `Link do Mercado Livre mantido` com o motivo. Cookies vencidos pedem um export novo.
+
+## O que foi feito em 29 de setembro de 2026
+
+A fila deixou de ser montada sozinha. O painel ganhou a Curadoria, a frase curta da legenda e a contagem de membros. Nada disso manda mensagem por conta própria: o envio continua no processo que já dispara a fila.
+
+### Curadoria da Amazon
+
+A fonte inicial foi o CSV `CSV Atualizado/amazon_livros_*.csv`. Cada linha mostra capa, título, categoria, preço e percentual de desconto. O checkbox é a fila. "Definir a fila" troca apenas os posts do dia que ainda estão agendados.
+
+Código: `promo_livros/catalog.py`, `promo_livros/dashboard_curation.py`, o retorno cedo em `promo_livros/morning.py`.
+
+No dia 29, a fila definida na mão ficou com intervalo de 17 minutos. Dois livros marcados saíram da fila porque a checagem de oferta não achou preço ao vivo: *Box Clássicos de Shakespeare* e *O Menino Maluquinho*. Os posts da manhã que já tinham saído não foram apagados.
+
+### Frase da legenda
+
+A linha em itálico sai de `promo_livros/blurb.py`. O prompt do `pitch` (fila antiga, com sinopse) ficou travado pelo teste e não é o caminho da Curadoria. A Curadoria usa `research`, descrito em "Resenha". O CSV não tem sinopse.
+
+### Membros no painel
+
+Em [painel.promolivros.org/hoje](https://painel.promolivros.org/hoje), abaixo do resumo do dia:
+
+- **Membros líquidos:** participantes dos grupos salvos, sem administrador e sem superadmin.
+- **Entradas do dia** e **saídas:** gente que entrou ou saiu desde a leitura anterior.
+- **Líquido do dia:** entradas menos saídas.
+
+A leitura usa `GET /api/{sessão}/groups/{id}/participants/v2` no WAHA. A primeira leitura de cada grupo só cria a base e não conta como entrada, porque o WhatsApp não devolve o histórico do dia. Por isso, na primeira vez, entradas, saídas e líquido ficaram em 0. O total líquido nessa leitura foi 168: Black Livros 01 com 53, 02 com 58, 03 com 57. O painel consulta de novo no máximo a cada 20 segundos. O telefone não é gravado: o sqlite guarda só um hash em `group_roster` e o movimento do dia em `group_flow`.
+
+Código: `promo_livros/membership.py` e o bloco no topo de `promo_livros/dashboard_belt.py`.
 
 ## O que foi feito
 
@@ -255,9 +451,9 @@ Curadoria, em `n:\Vibecoding\Promo Livros`:
 
 - Busca diária no Keepa, domínio 12 (Amazon.com.br). A raiz Livros foi resolvida na API: id `6740748011`, gravado no SQLite.
 - Três nichos, dois livros e dois reservas cada: Ficção (`7872687011`), Não ficção / História (`7843068011`), Biografia (`7841731011`).
-- Janela 20:00–22:00, três posts por hora, um nicho por vez. Às 22:00 para. O agendador é o processo `python -m promo_livros`. Ele não foi deixado rodando.
+- Janela 08:00–22:00, três posts por hora, um nicho por vez. Às 22:00 para. O agendador é o processo `python -m promo_livros`.
 - Régua de livro físico, ranking, nota, avaliações, desconto contra a média de 90 dias, menor preço histórico, tempo de rastreio, Amazon ou Buy Box. Preços em centavos.
-- "Menor preço em N dias" sai do histórico do Keepa. A frase de uma linha sai da sinopse (o Keepa não manda o texto das resenhas), via OpenAI `gpt-4.1-mini`, no máximo 180 caracteres. Sem `OPENAI_API_KEY`, o post sai sem essa frase. A chave ainda não foi colocada.
+- "Menor preço em N dias" sai do histórico do Keepa na fila automática. Na Curadoria, a frase de até 12 palavras sai da pesquisa na internet (`OpenAIBlurb.research`). Sem `OPENAI_API_KEY`, o post sai sem essa frase.
 - Link de afiliado com a tag do `.env`. Capa da Amazon junto da mensagem.
 - Repost só depois de 30 dias, e só se o preço novo for menor. Dry-run não grava fila nem `posts`.
 - `--once` monta a fila. `--once --dry-run` só mostra. `--publish` manda um horário já vencido. `--groups` lista grupos. `--refresh-category` ignora o id em cache.
@@ -294,12 +490,10 @@ Imagem do post, combinada e não implementada: de manhã a API gera só a cena (
 
 ## O que falta
 
-1. Parear o WhatsApp em `/dashboard`, com um celular que não seja o da outra esteira.
-2. Colocar esse número em Black Livros 01, 02 e 03.
-3. Ligar `whatsapp.enabled` e rodar o processo no Mac. Sem o número nos grupos, o disparo falha.
-4. Colocar `OPENAI_API_KEY` e, se for o caso, remontar a fila com `--once` enquanto nada estiver em `posts`.
-5. Implementar a imagem do post no escopo acima.
-6. Deixar o site como está até haver um pedido para publicar a oferta lá.
+1. A imagem combinada de manhã (cena gerada, capa colada, faixa de preço) continua fora deste fluxo. O card da fila manual usa a capa de cada loja.
+2. Deixar o site como está até haver um pedido para publicar a oferta lá.
+3. A aba Mercado Livre não tem categorias de assunto: o crawler grava "Português" em todas as linhas.
+4. O aviso de "menor preço em 365 dias" só existe no CSV da Amazon.
 
 ## Testes
 
