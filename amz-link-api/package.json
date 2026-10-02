@@ -1,0 +1,22 @@
+{
+  "name": "amz-link-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "API interna de links de afiliado da Amazon Brasil via SiteStripe",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "login": "node scripts/login.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.10.0",
+    "dotenv": "^16.6.1",
+    "express": "^4.21.2",
+    "playwright": "^1.55.0"
+  }
+}

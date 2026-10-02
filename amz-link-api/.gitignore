@@ -1,0 +1,8 @@
+node_modules/
+amz-profile/
+data/
+logs/
+.env
+*.sqlite
+*.sqlite3
+*.sqlite-journal
