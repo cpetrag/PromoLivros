@@ -1,0 +1,38 @@
+{
+  "started_utc": "2026-09-29T10:14:50.641810+00:00",
+  "finished_utc": "2026-09-29T10:49:51.549696+00:00",
+  "source_simple": "/Users/cpetrag/amazon-crawler/amazon-livros-1000.csv",
+  "source_rich_reuse": "/Volumes/HD 1Tb/Vibecoding/Promo Livros/CSV Atualizado/amazon_livros_2026-09-29.csv",
+  "unique_products": 1000,
+  "reused": 816,
+  "scraped": 184,
+  "need_scrape": 184,
+  "skipped_after_block": 0,
+  "blocker": null,
+  "errors": [],
+  "field_fill": {
+    "titulo": 1000,
+    "autor": 997,
+    "categoria": 1000,
+    "categoria_caminho": 922,
+    "formato": 1000,
+    "preco": 1000,
+    "preco_de": 992,
+    "menor_preco_365": 1000,
+    "badges": 999,
+    "categoria_mais_vendido": 246,
+    "asin": 1000,
+    "link": 1000
+  },
+  "menor_sim": 323,
+  "menor_nao": 677,
+  "csv": "/Users/cpetrag/amazon-crawler/amazon-livros-1000-full.csv",
+  "hd_csv": "/Volumes/HD 1Tb/Vibecoding/Promo Livros/CSV Atualizado/amazon-livros-1000.csv",
+  "sample_asins": [
+    "8539646374",
+    "853964780X",
+    "6559801365",
+    "B08Y3CV67L",
+    "6550974119"
+  ]
+}

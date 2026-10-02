@@ -1,0 +1,40 @@
+{
+  "started_utc": "2026-10-01T11:14:21.483121+00:00",
+  "finished_utc": "2026-10-01T12:43:56.723124+00:00",
+  "source_simple": "/Users/cpetrag/amazon-crawler/amazon-livros-2000-simple.csv",
+  "resume": true,
+  "unique_products": 2000,
+  "reused": 1520,
+  "scraped": 480,
+  "need_scrape": 480,
+  "skipped_after_block": 0,
+  "blocker": null,
+  "errors": [],
+  "error_count": 0,
+  "field_fill": {
+    "titulo": 2000,
+    "autor": 1998,
+    "categoria": 2000,
+    "categoria_caminho": 1861,
+    "formato": 1999,
+    "preco": 1999,
+    "preco_de": 1977,
+    "menor_preco_365": 2000,
+    "badges": 1975,
+    "categoria_mais_vendido": 1576,
+    "asin": 2000,
+    "link": 2000
+  },
+  "menor_sim": 1027,
+  "menor_nao": 973,
+  "csv": "/Users/cpetrag/amazon-crawler/amazon-livros-2000.csv",
+  "hd_csv": "/Volumes/HD 1Tb/Vibecoding/Promo Livros/CSV Atualizado/amazon-livros-2000.csv",
+  "hd_dated": "/Volumes/HD 1Tb/Vibecoding/Promo Livros/CSV Atualizado/amazon_livros_2026-10-01.csv",
+  "sample_asins": [
+    "8539646374",
+    "853964780X",
+    "6559801365",
+    "B09PW8LBZD",
+    "B08Y3CV67L"
+  ]
+}
