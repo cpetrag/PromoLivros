@@ -4,6 +4,7 @@ import os
 import re
 from collections.abc import Mapping
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import yaml
 from dotenv import load_dotenv
@@ -119,16 +120,26 @@ def _build(raw: Mapping, environ: Mapping[str, str], root: Path) -> AppConfig:
         waha_api_key=environ.get("WAHA_API_KEY", "").strip(),
         waha_session=environ.get("WAHA_SESSION", "promo-livros").strip() or "promo-livros",
         website_enabled=_as_bool(website, "enabled"),
+        amz_link_api_url=_amz_link_api_url(environ),
+        amz_link_api_token=environ.get("AMZ_TOKEN", "").strip(),
     )
 
 
 _GROUP_ID_RE = re.compile(r"^[0-9-]+@g\.us$")
 
 
+def _amz_link_api_url(environ: Mapping[str, str]) -> str:
+    raw = environ.get("AMZ_LINK_API_URL", "").strip() or "http://127.0.0.1:3070"
+    parsed = urlsplit(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ConfigError("AMZ_LINK_API_URL precisa ser um endereço http ou https.")
+    return raw.rstrip("/")
+
+
 def _gap_seconds(section: Mapping) -> int:
     if "gap_seconds" not in section:
         return 45
-    return _as_int(section, "gap_seconds", minimum=15, maximum=600)
+    return _as_int(section, "gap_seconds", minimum=5, maximum=600)
 
 
 def _whatsapp_groups(section: Mapping) -> tuple[WhatsAppGroup, ...]:
@@ -167,7 +178,7 @@ def _schedule(section: Mapping) -> ScheduleSettings:
         publish_end_hour=end_hour,
         publish_end_minute=end_minute,
         posts_per_hour=_as_int(section, "posts_per_hour", minimum=1, maximum=6),
-        per_niche=_as_int(section, "per_niche", minimum=1, maximum=6),
+        per_niche=_as_int(section, "per_niche", minimum=1, maximum=24),
         reserves_per_niche=_as_int(section, "reserves_per_niche", minimum=0, maximum=6),
     )
 

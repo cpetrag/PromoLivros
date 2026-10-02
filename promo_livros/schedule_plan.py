@@ -26,7 +26,7 @@ def build_slots(schedule: ScheduleSettings, niches: tuple[NicheConfig, ...] | li
             minute_of_day = start + index * interval
             if minute_of_day >= end:
                 raise ConfigError(
-                    "A janela da noite não cabe os horários. "
+                    "A janela de publicação não cabe os horários. "
                     "Reduza per_niche ou posts_per_hour, ou alargue publish_start e publish_end."
                 )
             hour, minute = divmod(minute_of_day, 60)

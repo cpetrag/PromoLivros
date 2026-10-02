@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import logging
 from typing import Protocol
 
@@ -88,6 +89,13 @@ class WahaClient:
             status = str(payload.get("status") or "")
         return _map_session_status(status)
 
+    def begin_pairing(self) -> None:
+        """Reabre a sessão para o celular escanear o QR. Não envia mensagem."""
+        try:
+            self._request("POST", f"/api/sessions/{self.session}/restart", timeout=30)
+        except WahaError:
+            self._request("POST", f"/api/sessions/{self.session}/start", timeout=30)
+
     def fetch_qr_png(self) -> bytes:
         headers = {"accept": "image/png"}
         if self.api_key:
@@ -134,6 +142,26 @@ class WahaClient:
         groups.sort(key=lambda group: group.name.casefold())
         return groups
 
+    def group_participants(self, chat_id: str) -> list[tuple[str, str]]:
+        """Id e papel de cada membro. Papéis: participant, admin, superadmin, left."""
+        if not chat_id.endswith("@g.us"):
+            raise WahaError("Grupo inválido.", session_down=False)
+        payload = self._request(
+            "GET",
+            f"/api/{self.session}/groups/{chat_id}/participants/v2",
+            timeout=_STATUS_TIMEOUT_SECONDS,
+        )
+        rows = payload if isinstance(payload, list) else []
+        people: list[tuple[str, str]] = []
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            member_id = item.get("id")
+            role = item.get("role")
+            if isinstance(member_id, str) and member_id and isinstance(role, str) and role:
+                people.append((member_id, role))
+        return people
+
     def send(self, chat_id: str, caption: str, image_url: str | None) -> str:
         if image_url:
             payload = self._request(
@@ -162,6 +190,25 @@ class WahaClient:
                     "text": caption,
                 },
             )
+        return _message_id(payload)
+
+    def send_jpeg(self, chat_id: str, caption: str, image: bytes) -> str:
+        """Manda o card que está no disco. O WAHA não precisa buscar uma URL."""
+        payload = self._request(
+            "POST",
+            "/api/sendImage",
+            timeout=_SEND_TIMEOUT_SECONDS,
+            body={
+                "session": self.session,
+                "chatId": chat_id,
+                "caption": caption,
+                "file": {
+                    "mimetype": "image/jpeg",
+                    "filename": "promo.jpg",
+                    "data": base64.b64encode(image).decode("ascii"),
+                },
+            },
+        )
         return _message_id(payload)
 
     def _request(
@@ -200,8 +247,10 @@ def _map_session_status(status: str) -> str:
     value = status.upper()
     if value == "WORKING":
         return "connected"
-    if value in {"SCAN_QR_CODE", "STARTING", "OPENING", "PAIRING", "PASSKEY_REQUIRED"}:
+    if value == "SCAN_QR_CODE":
         return "qr"
+    if value in {"STARTING", "OPENING", "PAIRING", "PASSKEY_REQUIRED"}:
+        return "starting"
     return "disconnected"
 
 

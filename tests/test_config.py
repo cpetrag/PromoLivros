@@ -40,6 +40,8 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.waha_session, "promo-livros")
         self.assertEqual(config.waha_url, "http://127.0.0.1:4443")
         self.assertFalse(config.website_enabled)
+        self.assertEqual(config.amz_link_api_url, "http://127.0.0.1:3070")
+        self.assertEqual(config.amz_link_api_token, "")
 
     def test_shipped_file_loads(self) -> None:
         path = Path(__file__).resolve().parents[1] / "config.yaml"

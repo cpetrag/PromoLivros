@@ -57,6 +57,16 @@ class WahaClientTests(unittest.TestCase):
         self.assertEqual(body["file"]["url"], "https://exemplo/capa.jpg")
         self.assertTrue(http.calls[0][1].endswith("/api/sendImage"))
 
+    def test_send_jpeg_posts_the_card_bytes(self) -> None:
+        http = _Http([_Response(200, {"id": "ABC"})])
+        client = WahaClient("http://127.0.0.1:4443", "", "promo-livros", http=http)
+
+        self.assertEqual(client.send_jpeg("120363430990609445@g.us", "texto", b"jpeg"), "ABC")
+        body = http.calls[0][2]
+        assert body is not None
+        self.assertEqual(body["file"]["data"], "anBlZw==")
+        self.assertNotIn("url", body["file"])
+
     def test_unpaired_session_is_retryable(self) -> None:
         http = _Http([_Response(422, {"message": "session is not working"}, text="session is not working")])
         client = WahaClient("http://127.0.0.1:3000", "", "esteira", http=http)
@@ -94,6 +104,29 @@ class WahaClientTests(unittest.TestCase):
             client.fetch_qr_png()
         recorded_headers = http.calls[0][3]
         self.assertNotIn("x-api-key", recorded_headers)
+
+    def test_begin_pairing_restarts_the_session(self) -> None:
+        http = _Http([_Response(201, {"status": "STARTING"})])
+        client = WahaClient("http://127.0.0.1:4443", "chave", "promo-livros", http=http)
+        client.begin_pairing()
+        self.assertEqual(http.calls[0][0], "POST")
+        self.assertTrue(http.calls[0][1].endswith("/api/sessions/promo-livros/restart"))
+
+    def test_group_participants_keep_role_and_skip_blanks(self) -> None:
+        http = _Http([
+            _Response(200, [
+                {"id": "1@c.us", "role": "participant"},
+                {"id": "2@c.us", "role": "admin"},
+                {"id": "", "role": "participant"},
+                {"role": "superadmin"},
+            ]),
+        ])
+        client = WahaClient("http://127.0.0.1:4443", "chave", "promo-livros", http=http)
+        self.assertEqual(
+            client.group_participants("120363430990609445@g.us"),
+            [("1@c.us", "participant"), ("2@c.us", "admin")],
+        )
+        self.assertIn("/participants/v2", http.calls[0][1])
 
 if __name__ == "__main__":
     unittest.main()

@@ -18,6 +18,101 @@ class PageTests(unittest.TestCase):
         self.assertNotIn("Black Livros", html)
         self.assertIn("Usuário ou senha incorretos", html)
 
+    def test_board_is_the_belt(self) -> None:
+        from promo_livros.board_store import FeedPost, FeedSend
+        from promo_livros.dashboard_pages import render_board
+        from promo_livros.send_schedule import default_schedule
+
+        post = FeedPost(
+            id=7,
+            clock="20:37",
+            status="scheduled",
+            title="Demon Slayer <x>",
+            price_cents=1990,
+            discount_pct=40,
+            url="https://link.amazon/B0abc",
+            sends=(FeedSend("Black Livros 01", "sent", "20:13"),),
+        )
+        html = render_board(
+            "2026-09-28",
+            [post],
+            notice=None,
+            sending=True,
+            schedule=default_schedule(),
+            groups=("Black Livros 01",),
+        )
+        self.assertIn("Promo Livros", html)
+        self.assertIn("Programação do dia", html)
+        self.assertIn("28 de setembro de 2026", html)
+        self.assertIn("Demon Slayer &lt;x&gt;", html)
+        self.assertNotIn("Demon Slayer <x>", html)
+        self.assertIn("Black Livros 01", html)
+        self.assertIn("Pausar envios", html)
+        self.assertIn('width="64"', html)
+        self.assertIn('height="90"', html)
+        self.assertIn('id="lightbox"', html)
+        self.assertIn('action="/hoje/manual"', html)
+        self.assertIn('action="/hoje/reorganizar"', html)
+        self.assertIn('action="/hoje/limpar"', html)
+        self.assertIn("Programar post", html)
+
+    def test_board_shows_liquid_members(self) -> None:
+        from promo_livros.dashboard_pages import render_board
+        from promo_livros.membership import GroupMembers, MembershipView
+        from promo_livros.send_schedule import default_schedule
+
+        view = MembershipView(
+            available=True,
+            groups=(GroupMembers(name="Black Livros 01", liquid=53, joined=2, left=1),),
+        )
+        html = render_board(
+            "2026-09-29",
+            [],
+            notice=None,
+            sending=False,
+            schedule=default_schedule(),
+            members=view,
+        )
+        self.assertIn("Membros líquidos", html)
+        self.assertIn(">53<", html)
+        self.assertIn("Entradas do dia", html)
+        self.assertIn(">2<", html)
+        self.assertIn("Saídas", html)
+        self.assertIn("Líquido do dia", html)
+        self.assertIn("+1", html)
+        self.assertLess(html.index('id="members"'), html.index('id="rows"'))
+
+    def test_a_late_unsent_post_is_marked_as_missed(self) -> None:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        from promo_livros.board_store import FeedPost
+        from promo_livros.dashboard_pages import render_board
+        from promo_livros.send_schedule import default_schedule
+
+        post = FeedPost(
+            id=4,
+            clock="14:05",
+            status="scheduled",
+            title="Box Rubem Fonseca",
+            price_cents=2899,
+            discount_pct=40,
+            url="https://www.amazon.com.br/dp/8503012345",
+            sends=(),
+        )
+        html = render_board(
+            "2026-09-30",
+            [post],
+            notice=None,
+            sending=True,
+            schedule=default_schedule(),
+            now=datetime(2026, 9, 30, 14, 30, tzinfo=ZoneInfo("America/Sao_Paulo")),
+            whatsapp="disconnected",
+        )
+        self.assertIn("não saiu · WhatsApp desconectado", html)
+        self.assertIn("1 post passou do horário e não saiu.", html)
+        self.assertIn("O WhatsApp está desconectado.", html)
+
     def test_today_without_queue_says_so(self) -> None:
         html = render_today(day="2026-09-27", view=None, error=None)
         self.assertIn("A fila de hoje ainda não existe", html)
@@ -40,8 +135,8 @@ class PageTests(unittest.TestCase):
             ),
         )
         html = render_today(day="2026-09-27", view=view, error=None)
-        self.assertIn("&lt;script&gt;", html)
-        self.assertNotIn("<script>", html)
+        self.assertIn("<h2>&lt;script&gt;</h2>", html)
+        self.assertNotIn("<h2><script>", html)
         self.assertIn("enviada", html)
 
     def test_whatsapp_qr_only_when_requested(self) -> None:
@@ -50,8 +145,11 @@ class PageTests(unittest.TestCase):
         offline = render_whatsapp(state="disconnected", message=None)
         online = render_whatsapp(state="connected", message=None)
         self.assertIn("/whatsapp/qr", qr)
+        self.assertIn('http-equiv="refresh"', qr)
         self.assertNotIn("/whatsapp/qr", down)
         self.assertNotIn("/whatsapp/qr", offline)
+        self.assertIn("Gerar QR", offline)
+        self.assertNotIn("Gerar QR", online)
         self.assertNotIn("/whatsapp/qr", online)
         self.assertIn("Conectado", online)
         self.assertIn("O WAHA não respondeu.", down)
@@ -174,6 +272,84 @@ class WhatsappQrPageTests(unittest.TestCase):
             body = _get(server, "/whatsapp", cookie=token)
             self.assertIn("WAHA não devolveu o QR.", body)
             self.assertNotIn("/whatsapp/qr", body)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
+class ComposerTests(unittest.TestCase):
+    def test_the_composer_has_a_block_per_store_with_a_button_to_read_the_link(self) -> None:
+        from promo_livros.dashboard_pages import render_board
+        from promo_livros.send_schedule import default_schedule
+
+        html = render_board(
+            "2026-09-28",
+            [],
+            notice=None,
+            sending=True,
+            schedule=default_schedule(),
+        )
+        self.assertIn("Primeira oferta", html)
+        self.assertIn("Segunda oferta", html)
+        self.assertIn('name="url"', html)
+        self.assertIn('name="url2"', html)
+        self.assertIn('id="field-url-1"', html)
+        self.assertIn('id="field-url-2"', html)
+        self.assertIn('data-alvo="-1"', html)
+        self.assertIn('data-alvo="-2"', html)
+        self.assertEqual(html.count(">Puxar dados</button>"), 2)
+        self.assertIn("Deixe vazio para o post sair com uma loja só.", html)
+
+
+class LinkRouteTests(unittest.TestCase):
+    def test_the_route_answers_with_the_fields_the_composer_fills(self) -> None:
+        import json
+
+        asked = []
+
+        def read_link(url: str) -> dict:
+            asked.append(url)
+            return {
+                "store": "ml",
+                "title": "Livro Dom Casmurro",
+                "price": "19,00",
+                "list_price": "39,00",
+                "cover": "https://http2.mlstatic.com/D_NQ_NP_1.jpg",
+                "url": url,
+            }
+
+        app = DashboardApp(
+            username="ana",
+            password="certa",
+            sessions=SessionStore(),
+            today=lambda: (None, None),
+            whatsapp=lambda: ("connected", None),
+            qr_png=lambda: b"",
+            group_form=lambda: ([], True, None),
+            save_groups=lambda _ids: None,
+            read_link=read_link,
+        )
+        DashboardHandler.app = app
+        server = ThreadingHTTPServer(("127.0.0.1", 0), DashboardHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            token = app.sessions.login("ana", "certa", "ana", "certa")
+            body = b"url=https%3A%2F%2Fprodutos.mercadolivre.com.br%2FMLB-1"
+            status, content_type, payload = _post_raw(
+                server,
+                "/hoje/link",
+                headers={
+                    "Cookie": f"promo_livros_session={token}",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Content-Length": str(len(body)),
+                },
+                data=body,
+            )
+            self.assertEqual(status, 200)
+            self.assertIn("application/json", content_type)
+            self.assertEqual(json.loads(payload)["title"], "Livro Dom Casmurro")
+            self.assertEqual(asked, ["https://produtos.mercadolivre.com.br/MLB-1"])
         finally:
             server.shutdown()
             server.server_close()

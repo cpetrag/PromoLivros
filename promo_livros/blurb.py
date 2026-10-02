@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
+import threading
+from pathlib import Path
 from typing import Protocol
 
 import requests
@@ -9,7 +12,14 @@ import requests
 logger = logging.getLogger("promo_livros")
 
 _OPENAI_URL = "https://api.openai.com/v1/chat/completions"
+_RESPONSES_URL = "https://api.openai.com/v1/responses"
 _SENTENCE_RE = re.compile(r"^(.+?[.!?])(?:\s|$)")
+_MAX_PITCH_WORDS = 12
+_PRICE_WORDS = ("r$", "preço", "preco", "desconto")
+
+
+class OpenAIAuthError(Exception):
+    """A chave não foi aceita. A fila não deve apagar as frases que já tem."""
 
 
 class BlurbWriter(Protocol):
@@ -29,6 +39,48 @@ class OpenAIBlurb:
         self._model = model
         self._max_chars = max_chars
         self._session = session or requests.Session()
+        self._owns_session = session is None
+
+    def close(self) -> None:
+        if self._owns_session:
+            self._session.close()
+
+    def pitch(self, *, title: str, synopsis: str) -> str | None:
+        """Uma frase curta com convite para ler este livro, ou None se não der."""
+        source = " ".join((synopsis or "").split())
+        name = " ".join((title or "").split())
+        if not self._api_key or not name or not source:
+            return None
+        text = self._complete(
+            _pitch_prompt(),
+            f"Título: {name}\nSinopse:\n{source}",
+            max_tokens=60,
+        )
+        line = promo_line(text or "")
+        if line is not None:
+            return line
+        text = self._complete(
+            _pitch_prompt(),
+            (
+                f"Título: {name}\nSinopse:\n{source}\n"
+                "A frase anterior passou de 12 palavras. Escreva outra, com no máximo 12."
+            ),
+            max_tokens=60,
+        )
+        return promo_line(text or "")
+
+    def research(self, *, title: str, author: str = "") -> str | None:
+        """Uma frase de até 12 palavras, achada na internet, ou None se não der."""
+        name = " ".join((title or "").split())
+        writer = " ".join((author or "").split())
+        if not self._api_key or not name:
+            return None
+        text = self._research(name, writer)
+        line = promo_line(text or "")
+        if line is not None:
+            return line
+        text = self._research(name, writer, shorter=True)
+        return promo_line(text or "")
 
     def summarize(
         self,
@@ -61,16 +113,109 @@ class OpenAIBlurb:
                 },
             ],
         }
+        return one_sentence(self._complete(_system_prompt(self._max_chars), payload["messages"][1]["content"], 120) or "", self._max_chars)
+
+    def _research(self, title: str, author: str, *, shorter: bool = False) -> str | None:
+        who = f"Título: {title}"
+        if author:
+            who += f"\nAutor: {author}"
+        if shorter:
+            who += "\nA frase anterior passou de 12 palavras. Escreva outra, com no máximo 12."
+        try:
+            response = self._session.post(
+                _RESPONSES_URL,
+                headers={"Authorization": f"Bearer {self._api_key}"},
+                json={
+                    "model": self._model,
+                    "tools": [{"type": "web_search"}],
+                    "input": [
+                        {"role": "system", "content": _research_prompt()},
+                        {"role": "user", "content": who},
+                    ],
+                },
+                timeout=45,
+            )
+        except requests.RequestException:
+            logger.warning("A OpenAI não respondeu. A resenha fica de fora.")
+            return self._research_from_pages(title, author)
+        if response.status_code in {401, 403}:
+            raise OpenAIAuthError("A chave da OpenAI foi recusada.")
+        if response.status_code >= 400:
+            logger.warning("A busca na web recusou (HTTP %s). Vou ler páginas públicas.", response.status_code)
+            return self._research_from_pages(title, author)
+        try:
+            text = _response_text(response.json())
+        except ValueError:
+            return self._research_from_pages(title, author)
+        return text or self._research_from_pages(title, author)
+
+    def _research_from_pages(self, title: str, author: str) -> str | None:
+        notes = self._public_notes(title)
+        if not notes:
+            return None
+        who = f"Título: {title}"
+        if author:
+            who += f"\nAutor: {author}"
+        return self._complete(
+            _research_prompt() + " Use somente os trechos abaixo, que vieram da internet.",
+            f"{who}\nTrechos:\n{notes}",
+            60,
+        )
+
+    def _public_notes(self, title: str) -> str:
+        try:
+            response = self._session.get(
+                "https://pt.wikipedia.org/w/api.php",
+                params={
+                    "action": "query",
+                    "list": "search",
+                    "srsearch": f"{title} livro",
+                    "srlimit": 2,
+                    "utf8": 1,
+                    "format": "json",
+                },
+                headers={"user-agent": "promo-livros"},
+                timeout=12,
+            )
+        except requests.RequestException:
+            return ""
+        if getattr(response, "status_code", 500) >= 400:
+            return ""
+        try:
+            payload = response.json()
+        except ValueError:
+            return ""
+        hits = (payload.get("query") or {}).get("search") or []
+        snippets = []
+        for hit in hits:
+            if not isinstance(hit, dict):
+                continue
+            text = re.sub(r"<[^>]+>", "", " ".join(str(hit.get("snippet") or "").split()))
+            if text:
+                snippets.append(text)
+        return "\n".join(snippets[:2])
+
+    def _complete(self, system: str, user: str, max_tokens: int) -> str | None:
         try:
             response = self._session.post(
                 _OPENAI_URL,
                 headers={"Authorization": f"Bearer {self._api_key}"},
-                json=payload,
+                json={
+                    "model": self._model,
+                    "temperature": 0.4,
+                    "max_tokens": max_tokens,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                },
                 timeout=30,
             )
         except requests.RequestException:
             logger.warning("A OpenAI não respondeu. A mensagem sai sem a frase do livro.")
             return None
+        if response.status_code in {401, 403}:
+            raise OpenAIAuthError("A chave da OpenAI foi recusada.")
         if response.status_code >= 400:
             logger.warning("A OpenAI recusou o resumo (HTTP %s). A mensagem sai sem a frase.", response.status_code)
             return None
@@ -79,7 +224,7 @@ class OpenAIBlurb:
         except ValueError:
             logger.warning("A OpenAI devolveu um corpo inválido. A mensagem sai sem a frase.")
             return None
-        return one_sentence(_message_text(body), self._max_chars)
+        return _message_text(body)
 
 
 def one_sentence(text: str, max_chars: int) -> str | None:
@@ -97,6 +242,50 @@ def one_sentence(text: str, max_chars: int) -> str | None:
     return f"{trimmed}."
 
 
+def promo_line(text: str) -> str | None:
+    """Aceita uma frase de até 12 palavras, sem preço e sem marca de WhatsApp."""
+    compact = " ".join(text.replace("*", " ").replace("_", " ").split())
+    compact = compact.strip().strip('"').strip("'").strip()
+    if not compact:
+        return None
+    words = compact.rstrip(".!?").split()
+    if not 4 <= len(words) <= _MAX_PITCH_WORDS:
+        return None
+    folded = compact.casefold()
+    if any(token in folded for token in _PRICE_WORDS):
+        return None
+    if compact[-1] not in ".!?":
+        compact = f"{compact}."
+    return compact
+
+
+def _pitch_prompt() -> str:
+    return (
+        "Você escreve uma única frase de no máximo 12 palavras, em português do Brasil, "
+        "para a legenda de um livro no WhatsApp. "
+        "A frase resume o assunto deste livro baseado em resenhas encontradas na internet "
+        "e nasce só do título e da sinopse. "
+        "Não invente trama, prêmio ou fato que não esteja na sinopse. "
+        "Não mencione preço, desconto, frete nem avaliações. "
+        "Não repita o título. "
+        "Não use aspas, emoji, asterisco, sublinhado nem quebra de linha."
+    )
+
+
+def _research_prompt() -> str:
+    return (
+        "Pesquise na internet do que trata este livro. "
+        "Escreva uma única frase de no máximo 12 palavras, em português do Brasil, "
+        "para a legenda no WhatsApp. "
+        "A frase resume o assunto com base no que as páginas encontradas dizem. "
+        "Se não achar o livro, responda vazio. "
+        "Não invente trama, prêmio ou fato que a pesquisa não sustente. "
+        "Não mencione preço, desconto, frete nem avaliações. "
+        "Não repita o título. "
+        "Não use aspas, emoji, asterisco, sublinhado nem quebra de linha."
+    )
+
+
 def _system_prompt(max_chars: int) -> str:
     return (
         "Você escreve uma única frase, em português do Brasil, dizendo do que o livro trata. "
@@ -106,6 +295,68 @@ def _system_prompt(max_chars: int) -> str:
         "Não use aspas, emoji nem quebra de linha. "
         f"No máximo {max_chars} caracteres."
     )
+
+
+def _response_text(payload: dict) -> str:
+    direct = payload.get("output_text")
+    if isinstance(direct, str) and direct.strip():
+        return direct
+    output = payload.get("output")
+    parts: list[str] = []
+    if isinstance(output, list):
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+            content = item.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and isinstance(block.get("text"), str):
+                        parts.append(block["text"])
+            if isinstance(item.get("text"), str):
+                parts.append(item["text"])
+    if parts:
+        return " ".join(parts)
+    return _message_text(payload)
+
+
+class BlurbCache:
+    """Guarda a frase que a IA já achou, para não pesquisar o mesmo livro de novo."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._lock = threading.Lock()
+        self._rows: dict[str, str] = {}
+        if path.is_file():
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                loaded = {}
+            if isinstance(loaded, dict):
+                self._rows = {
+                    str(key): value
+                    for key, value in loaded.items()
+                    if isinstance(value, str) and value.strip()
+                }
+
+    def get(self, title: str) -> str:
+        with self._lock:
+            return self._rows.get(_cache_key(title), "")
+
+    def put(self, title: str, line: str) -> None:
+        key = _cache_key(title)
+        cleaned = line.strip()
+        if not key or not cleaned:
+            return
+        with self._lock:
+            self._rows[key] = cleaned
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self._path.with_suffix(".json.tmp")
+            temporary.write_text(json.dumps(self._rows, ensure_ascii=False, indent=2), encoding="utf-8")
+            temporary.replace(self._path)
+
+
+def _cache_key(title: str) -> str:
+    return " ".join(title.casefold().split())
 
 
 def _message_text(payload: dict) -> str:

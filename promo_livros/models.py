@@ -106,6 +106,8 @@ class AppConfig:
     waha_api_key: str
     waha_session: str
     website_enabled: bool
+    amz_link_api_url: str
+    amz_link_api_token: str
 
 
 @dataclass(frozen=True)

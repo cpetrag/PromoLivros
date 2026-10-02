@@ -58,7 +58,7 @@ def _run(argv: list[str] | None) -> None:
         )
     elif not args.dry_run:
         logger.warning(
-            "O WhatsApp ainda está desligado. No horário da noite a mensagem vai para o log "
+            "O WhatsApp ainda está desligado. No horário da publicação a mensagem vai para o log "
             "e o livro fica marcado como usado por 30 dias."
         )
     if not config.affiliate_tag:

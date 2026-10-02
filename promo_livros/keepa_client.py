@@ -142,6 +142,21 @@ class KeepaClient:
                     found.append(product)
         return found
 
+    def deal_stats(self, asins: list[str]) -> list[dict]:
+        """Preço e rank dos últimos 120 dias, sem baixar o histórico. Cerca de 1 token por ASIN."""
+        if not asins:
+            return []
+        payload = self._request(
+            "GET",
+            "/product",
+            params={"asin": ",".join(asins), "stats": 120, "history": 0},
+            estimated_tokens=len(asins),
+        )
+        products = payload.get("products") or []
+        if not isinstance(products, list):
+            raise KeepaError("Resposta de /product sem a lista products.")
+        return [product for product in products if isinstance(product, dict)]
+
     def _request(
         self,
         method: str,
