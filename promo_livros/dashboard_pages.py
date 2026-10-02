@@ -135,6 +135,7 @@ def render_board(
     whatsapp: str = "unknown",
     paused_until: str = "",
     members=None,
+    repeat_days: int = 1,
 ) -> str:
     from promo_livros.dashboard_belt import BELT_CSS, BELT_JS, page_body
 
@@ -150,6 +151,7 @@ def render_board(
         whatsapp=whatsapp,
         paused_until=paused_until,
         members=members,
+        repeat_days=repeat_days,
     )
     return _page(
         "Hoje",

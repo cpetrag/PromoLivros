@@ -19,6 +19,7 @@ class BoardBook:
     coupon: str
     alt_url: str = ""
     alt_price_cents: int | None = None
+    product_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -124,6 +125,7 @@ class BoardStore:
         )
         _add_column(self._connection, "scheduled_books", "alt_url", "TEXT NOT NULL DEFAULT ''")
         _add_column(self._connection, "scheduled_books", "alt_price_cents", "INTEGER")
+        _add_column(self._connection, "scheduled_books", "product_id", "TEXT NOT NULL DEFAULT ''")
         self._connection.commit()
 
     def sending_enabled(self) -> bool:
@@ -272,6 +274,84 @@ class BoardStore:
                     (clock, post.id, day),
                 )
             return len(posts)
+
+    def replace_scheduled(self, day: str) -> int:
+        """Tira da fila o que ainda não saiu. O status é replaced, não cancelled."""
+        with self._lock, self._connection:
+            cleared = self._connection.execute(
+                """
+                UPDATE scheduled_posts
+                SET status = 'replaced', position = -id
+                WHERE day = ? AND status = 'scheduled'
+                """,
+                (day,),
+            ).rowcount
+            self._connection.execute("DELETE FROM board_settings WHERE key = 'rush_post_id'")
+        return int(cleared)
+
+    def repeat_days(self) -> int:
+        raw = self.setting("janela_repeticao_dias") or "1"
+        try:
+            days = int(raw)
+        except ValueError:
+            return 1
+        return min(30, max(1, days))
+
+    def sent_product_clocks(self, today: str, days: int | None = None) -> dict[str, list[str]]:
+        """ASIN ou MLB já enviado na janela, com o horário de cada saída."""
+        from datetime import date, timedelta
+
+        from promo_livros.fila import produto_de_url
+
+        window = self.repeat_days() if days is None else days
+        end = date.fromisoformat(today)
+        start = (end - timedelta(days=max(1, window) - 1)).isoformat()
+        found: dict[str, list[str]] = {}
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT id, clock
+                FROM scheduled_posts
+                WHERE day >= ? AND day <= ?
+                  AND (
+                    status = 'sent'
+                    OR EXISTS (
+                      SELECT 1 FROM board_sends
+                      WHERE post_id = scheduled_posts.id AND status = 'sent'
+                    )
+                  )
+                ORDER BY clock, id
+                """,
+                (start, today),
+            ).fetchall()
+            for row in rows:
+                books = self._connection.execute(
+                    """
+                    SELECT title, url, product_id
+                    FROM scheduled_books
+                    WHERE post_id = ?
+                    ORDER BY sort_order, id
+                    """,
+                    (row["id"],),
+                ).fetchall()
+                for book in books:
+                    product_id = str(book["product_id"] or "") or produto_de_url(str(book["url"] or ""))
+                    if not product_id:
+                        continue
+                    found.setdefault(product_id.upper(), []).append(str(row["clock"]))
+        return found
+
+    def move_to_day(self, post_id: int, day: str, clock: str) -> bool:
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                """
+                UPDATE scheduled_posts
+                SET day = ?, clock = ?, position = ?
+                WHERE id = ? AND status = 'scheduled'
+                """,
+                (day, clock, self._next_position(day), post_id),
+            )
+        return cursor.rowcount == 1
 
     def cancel_day(self, day: str) -> None:
         with self._lock, self._connection:
@@ -914,6 +994,10 @@ class BoardStore:
 
     def mark_sent(self, post_id: int) -> None:
         with self._lock, self._connection:
+            row = self._connection.execute(
+                "SELECT day FROM scheduled_posts WHERE id = ?",
+                (post_id,),
+            ).fetchone()
             self._connection.execute(
                 """
                 UPDATE scheduled_posts
@@ -923,6 +1007,32 @@ class BoardStore:
                 (post_id,),
             )
             self._clear_rush(post_id)
+            if row is not None:
+                self._mark_catalog_sent(post_id, str(row["day"]))
+
+    def _mark_catalog_sent(self, post_id: int, day: str) -> None:
+        from promo_livros.fila import produto_de_url
+
+        books = self._connection.execute(
+            "SELECT url, product_id FROM scheduled_books WHERE post_id = ?",
+            (post_id,),
+        ).fetchall()
+        for book in books:
+            product_id = str(book["product_id"] or "") or produto_de_url(str(book["url"] or ""))
+            if not product_id:
+                continue
+            for table in ("catalog_books", "ml_books"):
+                columns = {str(item[1]) for item in self._connection.execute(f"PRAGMA table_info({table})")}
+                if "pick_state" not in columns:
+                    continue
+                self._connection.execute(
+                    f"""
+                    UPDATE {table}
+                    SET picked = 0, pick_seq = 0, pick_state = 'enviado', pick_day = ?
+                    WHERE asin = ?
+                    """,
+                    (day, product_id.upper()),
+                )
 
     def image_path_for(self, post_id: int) -> str | None:
         with self._lock:
@@ -972,7 +1082,7 @@ class BoardStore:
         books = self._connection.execute(
             """
             SELECT title, blurb, price_cents, list_price_cents, discount_pct,
-                   lowest_label, url, coupon, alt_url, alt_price_cents
+                   lowest_label, url, coupon, alt_url, alt_price_cents, product_id
             FROM scheduled_books
             WHERE post_id = ?
             ORDER BY sort_order, id
@@ -998,6 +1108,7 @@ class BoardStore:
                     coupon=item["coupon"],
                     alt_url=item["alt_url"] or "",
                     alt_price_cents=None if item["alt_price_cents"] is None else int(item["alt_price_cents"]),
+                    product_id=str(item["product_id"] or ""),
                 )
                 for item in books
             ),
@@ -1008,8 +1119,8 @@ class BoardStore:
             """
             INSERT INTO scheduled_books (
                 post_id, sort_order, title, blurb, price_cents, list_price_cents,
-                discount_pct, lowest_label, url, coupon, alt_url, alt_price_cents
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                discount_pct, lowest_label, url, coupon, alt_url, alt_price_cents, product_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -1025,6 +1136,7 @@ class BoardStore:
                     book.coupon,
                     book.alt_url,
                     book.alt_price_cents,
+                    book.product_id,
                 )
                 for index, book in enumerate(books)
             ],

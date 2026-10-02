@@ -6,6 +6,7 @@ import io
 import json
 import re
 import sqlite3
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from io import BytesIO
@@ -15,11 +16,10 @@ from zoneinfo import ZoneInfo
 from PIL import Image
 
 from promo_livros.board_store import BoardBook, BoardStore
-from promo_livros.book_match import pair_posts
+from promo_livros.fila import OpcoesFila, item_de_livro, montar_fila
 from promo_livros.ml_links import clean_product_url, is_ml_url, thumbnail_url
 from promo_livros.post_card import download_image, render_card
 from promo_livros.post_copy import render_caption
-from promo_livros.send_schedule import repack_clocks
 
 _ASIN = re.compile(r"^[A-Z0-9]{10}$")
 _ML_ID = re.compile(r"^MLB\d{6,14}$")
@@ -43,6 +43,9 @@ class CatalogBook:
     store: str = "amazon"
     image_url: str = ""
     kids: bool = False
+    not_book: bool = False
+    pick_state: str = ""
+    pick_day: str = ""
 
 
 class CatalogError(ValueError):
@@ -101,6 +104,8 @@ class CatalogStore:
         self._ensure_kids("ml_books")
         self._ensure_pick_seq("catalog_books")
         self._ensure_pick_seq("ml_books")
+        self._ensure_flags("catalog_books")
+        self._ensure_flags("ml_books")
         self._connection.commit()
 
     def close(self) -> None:
@@ -110,6 +115,15 @@ class CatalogStore:
         columns = {str(row["name"]) for row in self._connection.execute(f"PRAGMA table_info({table})")}
         if "kids" not in columns:
             self._connection.execute(f"ALTER TABLE {table} ADD COLUMN kids INTEGER NOT NULL DEFAULT 0")
+
+    def _ensure_flags(self, table: str) -> None:
+        columns = {str(row["name"]) for row in self._connection.execute(f"PRAGMA table_info({table})")}
+        if "not_book" not in columns:
+            self._connection.execute(f"ALTER TABLE {table} ADD COLUMN not_book INTEGER NOT NULL DEFAULT 0")
+        if "pick_state" not in columns:
+            self._connection.execute(f"ALTER TABLE {table} ADD COLUMN pick_state TEXT NOT NULL DEFAULT ''")
+        if "pick_day" not in columns:
+            self._connection.execute(f"ALTER TABLE {table} ADD COLUMN pick_day TEXT NOT NULL DEFAULT ''")
 
     def _ensure_pick_seq(self, table: str) -> None:
         """A ordem dos cliques decide o par de cada post. Marcação antiga entra pela posição do CSV."""
@@ -137,10 +151,10 @@ class CatalogStore:
                 """
                 INSERT INTO catalog_books (
                     asin, position, title, author, category,
-                    price_cents, list_cents, low_365, url, picked, kids
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    price_cents, list_cents, low_365, url, picked, kids, not_book
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                [(*_row_values(book, kept), int(book.kids)) for book in books],
+                [(*_row_values(book, kept), int(book.kids), int(book.not_book)) for book in books],
             )
             self._remember("source", source)
         return len(books)
@@ -156,10 +170,10 @@ class CatalogStore:
                 """
                 INSERT INTO ml_books (
                     asin, position, title, author, category,
-                    price_cents, list_cents, low_365, url, picked, kids, image_url
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    price_cents, list_cents, low_365, url, picked, kids, not_book, image_url
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                [(*_row_values(book, kept), int(book.kids), book.image_url) for book in books],
+                [(*_row_values(book, kept), int(book.kids), int(book.not_book), book.image_url) for book in books],
             )
             self._remember("ml_source", source)
         return len(books)
@@ -167,7 +181,8 @@ class CatalogStore:
     def books(self) -> list[CatalogBook]:
         rows = self._connection.execute(
             """
-            SELECT asin, position, title, author, category, price_cents, list_cents, low_365, url, picked, kids
+            SELECT asin, position, title, author, category, price_cents, list_cents, low_365, url, picked, kids,
+                   not_book, pick_state, pick_day
             FROM catalog_books
             ORDER BY position, asin
             """
@@ -178,7 +193,7 @@ class CatalogStore:
         rows = self._connection.execute(
             """
             SELECT asin, position, title, author, category, price_cents, list_cents, low_365, url, picked, kids,
-                   image_url
+                   not_book, pick_state, pick_day, image_url
             FROM ml_books
             ORDER BY position, asin
             """
@@ -203,7 +218,7 @@ class CatalogStore:
         row = self._connection.execute(
             f"""
             SELECT asin, position, title, author, category, price_cents, list_cents, low_365, url,
-                   picked, kids{extra}
+                   picked, kids, not_book, pick_state, pick_day{extra}
             FROM {table}
             WHERE asin = ?
             """,
@@ -217,15 +232,37 @@ class CatalogStore:
     def ml_picked(self) -> list[CatalogBook]:
         return self._picked_in("ml_books", store="ml")
 
-    def _picked_in(self, table: str, *, store: str) -> list[CatalogBook]:
-        """Na ordem em que foram marcados. Esta ordem forma o par de cada post."""
+    def queue_for(self, day: str) -> tuple[list[CatalogBook], list[CatalogBook]]:
+        """Reserva do dia na frente, depois o que está marcado ou já na fila."""
+        return (
+            self._queue_in("catalog_books", store="amazon", day=day),
+            self._queue_in("ml_books", store="ml", day=day),
+        )
+
+    def _queue_in(self, table: str, *, store: str, day: str) -> list[CatalogBook]:
         extra = ", image_url" if table == "ml_books" else ""
         rows = self._connection.execute(
             f"""
             SELECT asin, position, title, author, category, price_cents, list_cents, low_365, url,
-                   picked, kids{extra}
+                   picked, kids, not_book, pick_state, pick_day{extra}
             FROM {table}
-            WHERE picked = 1
+            WHERE pick_state = 'reserva' AND pick_day = ?
+            ORDER BY pick_seq, position, asin
+            """,
+            (day,),
+        ).fetchall()
+        reservas = [_book(row, store=store) for row in rows]
+        return [*reservas, *self._picked_in(table, store=store)]
+
+    def _picked_in(self, table: str, *, store: str) -> list[CatalogBook]:
+        """Na ordem em que foram marcados. Reserva e enviado não entram nesta lista."""
+        extra = ", image_url" if table == "ml_books" else ""
+        rows = self._connection.execute(
+            f"""
+            SELECT asin, position, title, author, category, price_cents, list_cents, low_365, url,
+                   picked, kids, not_book, pick_state, pick_day{extra}
+            FROM {table}
+            WHERE picked = 1 AND pick_state NOT IN ('reserva', 'enviado')
             ORDER BY pick_seq, position, asin
             """
         ).fetchall()
@@ -261,53 +298,225 @@ class CatalogStore:
         ).fetchone()
         return int(amazon["total"]) + int(mercado["total"])
 
-    def set_picked(self, asin: str, picked: bool) -> int:
+    def set_picked(self, asin: str, picked: bool, day: str = "") -> int:
         if _ASIN.fullmatch(asin.upper()) is None:
             raise CatalogError("ASIN inválido.")
-        self._write_pick("catalog_books", asin.upper(), picked)
+        self._write_pick("catalog_books", asin.upper(), picked, day)
         return self.picked_total()
 
-    def set_ml_picked(self, item_id: str, picked: bool) -> int:
+    def set_ml_picked(self, item_id: str, picked: bool, day: str = "") -> int:
         key = item_id.strip().upper()
         if _ML_ID.fullmatch(key) is None:
             raise CatalogError("Anúncio inválido.")
-        self._write_pick("ml_books", key, picked)
+        self._write_pick("ml_books", key, picked, day)
         return self.picked_total()
 
-    def _write_pick(self, table: str, key: str, picked: bool) -> None:
+    def _write_pick(self, table: str, key: str, picked: bool, day: str = "") -> None:
         with self._connection:
+            current = self._connection.execute(
+                f"SELECT pick_state, pick_day FROM {table} WHERE asin = ?",
+                (key,),
+            ).fetchone()
+            if current is None:
+                raise CatalogError("Esse livro não está no catálogo.")
+            if picked and current["pick_state"] == "enviado" and day and current["pick_day"] == day:
+                raise CatalogError("Este livro saiu hoje. Ele volta a ficar disponível amanhã.")
             row = self._connection.execute(
                 f"SELECT MAX(pick_seq) AS last FROM {table} WHERE picked = 1"
             ).fetchone()
             seq = int(row["last"] or 0) + 1 if picked else 0
-            updated = self._connection.execute(
-                f"UPDATE {table} SET picked = ?, pick_seq = ? WHERE asin = ?",
-                (int(picked), seq, key),
-            ).rowcount
-        if updated == 0:
-            raise CatalogError("Esse livro não está no catálogo.")
+            state = "marcado" if picked else ""
+            self._connection.execute(
+                f"""
+                UPDATE {table}
+                SET picked = ?, pick_seq = ?, pick_state = ?, pick_day = ?
+                WHERE asin = ?
+                """,
+                (int(picked), seq, state, day if picked else "", key),
+            )
 
     def annotate_kids(self, rows: list[dict[str, str]], kind: str = "amazon") -> int:
-        """Marca infantil pelo caminho da categoria, sem mexer na seleção."""
+        """Marca infantil e o que não é livro, sem mexer na seleção."""
         books = parse_rows(rows, kind="ml" if kind == "ml" else "amazon")
         table = "ml_books" if kind == "ml" else "catalog_books"
         with self._connection:
             self._connection.executemany(
-                f"UPDATE {table} SET kids = ? WHERE asin = ?",
-                [(int(book.kids), book.asin) for book in books],
+                f"UPDATE {table} SET kids = ?, not_book = ? WHERE asin = ?",
+                [(int(book.kids), int(book.not_book), book.asin) for book in books],
             )
         return sum(1 for book in books if book.kids)
 
+    def migrate_pick_states(self, sent_ids: set[str], day: str) -> int:
+        """Marcações antigas ganham estado. O que já saiu hoje deixa de contar como marcado."""
+        if self._meta("pick_state_v1") == "1":
+            return 0
+        changed = 0
+        with self._connection:
+            for table in ("catalog_books", "ml_books"):
+                rows = self._connection.execute(
+                    f"SELECT asin FROM {table} WHERE picked = 1 AND pick_state = ''"
+                ).fetchall()
+                for row in rows:
+                    asin = str(row["asin"])
+                    if asin in sent_ids:
+                        self._connection.execute(
+                            f"""
+                            UPDATE {table}
+                            SET picked = 0, pick_seq = 0, pick_state = 'enviado', pick_day = ?
+                            WHERE asin = ?
+                            """,
+                            (day, asin),
+                        )
+                    else:
+                        self._connection.execute(
+                            f"UPDATE {table} SET pick_state = 'marcado', pick_day = ? WHERE asin = ?",
+                            (day, asin),
+                        )
+                    changed += 1
+            self._remember("pick_state_v1", "1")
+        return changed
+
+    def mark_enviado(self, product_id: str, day: str) -> None:
+        key = (product_id or "").strip().upper()
+        if not key:
+            return
+        with self._connection:
+            for table in ("catalog_books", "ml_books"):
+                self._connection.execute(
+                    f"""
+                    UPDATE {table}
+                    SET picked = 0, pick_seq = 0, pick_state = 'enviado', pick_day = ?
+                    WHERE asin = ?
+                    """,
+                    (day, key),
+                )
+
+    def aplicar_estados(
+        self,
+        na_fila: list[tuple[str, str]],
+        reserva: list[tuple[str, str]],
+        bloqueados: list[tuple[str, str]],
+        today: str,
+        tomorrow: str,
+    ) -> None:
+        with self._connection:
+            for store, asin in na_fila:
+                self._set_state(store, asin, "na_fila", today, picked=True)
+            for store, asin in reserva:
+                self._set_state(store, asin, "reserva", tomorrow, picked=True)
+            for store, asin in bloqueados:
+                self._set_state(store, asin, "enviado", today, picked=False)
+
+    def _set_state(self, store: str, asin: str, state: str, day: str, *, picked: bool) -> None:
+        table = "ml_books" if store == "ml" else "catalog_books"
+        self._connection.execute(
+            f"""
+            UPDATE {table}
+            SET picked = ?, pick_state = ?, pick_day = ?
+            WHERE asin = ?
+            """,
+            (int(picked), state, day, asin),
+        )
+
+    def dump_picks(self) -> list[dict[str, str | int]]:
+        rows = []
+        for table, store in (("catalog_books", "amazon"), ("ml_books", "ml")):
+            found = self._connection.execute(
+                f"SELECT asin, picked, pick_seq, pick_state, pick_day FROM {table} WHERE picked = 1 OR pick_state != ''"
+            ).fetchall()
+            for row in found:
+                rows.append(
+                    {
+                        "store": store,
+                        "asin": str(row["asin"]),
+                        "picked": int(row["picked"]),
+                        "pick_seq": int(row["pick_seq"]),
+                        "pick_state": str(row["pick_state"]),
+                        "pick_day": str(row["pick_day"]),
+                    }
+                )
+        return rows
+
+    def restore_picks(self, rows: list[dict]) -> None:
+        with self._connection:
+            self._connection.execute(
+                "UPDATE catalog_books SET picked = 0, pick_seq = 0, pick_state = '', pick_day = ''"
+            )
+            self._connection.execute(
+                "UPDATE ml_books SET picked = 0, pick_seq = 0, pick_state = '', pick_day = ''"
+            )
+            for row in rows:
+                table = "ml_books" if row["store"] == "ml" else "catalog_books"
+                self._connection.execute(
+                    f"""
+                    UPDATE {table}
+                    SET picked = ?, pick_seq = ?, pick_state = ?, pick_day = ?
+                    WHERE asin = ?
+                    """,
+                    (int(row["picked"]), int(row["pick_seq"]), row["pick_state"], row["pick_day"], row["asin"]),
+                )
+
+    def restore_rows(self, rows: list[dict]) -> None:
+        """Devolve marcações sem apagar as outras."""
+        with self._connection:
+            for row in rows:
+                table = "ml_books" if row["store"] == "ml" else "catalog_books"
+                self._connection.execute(
+                    f"""
+                    UPDATE {table}
+                    SET picked = ?, pick_seq = ?, pick_state = ?, pick_day = ?
+                    WHERE asin = ?
+                    """,
+                    (int(row["picked"]), int(row["pick_seq"]), row["pick_state"], row["pick_day"], row["asin"]),
+                )
+
+    def clear_marks(self) -> list[dict[str, str | int]]:
+        """Tira marcados, fila e reserva. Enviado fica. Devolve o que saiu, para desfazer."""
+        previous = [
+            row
+            for row in self.dump_picks()
+            if row["pick_state"] != "enviado"
+        ]
+        with self._connection:
+            for table in ("catalog_books", "ml_books"):
+                self._connection.execute(
+                    f"""
+                    UPDATE {table}
+                    SET picked = 0, pick_seq = 0, pick_state = '', pick_day = ''
+                    WHERE pick_state != 'enviado'
+                    """
+                )
+        return previous
+
+    def id_por_titulo(self, title: str) -> str:
+        wanted = (title or "").casefold().strip()
+        if not wanted:
+            return ""
+        for book in (*self.books(), *self.ml_books()):
+            if book.title.casefold().strip() == wanted:
+                return book.asin
+        return ""
+
     def begin_day(self, day: str) -> int:
-        """Na virada, as marcações do dia anterior saem. Devolve quantas saíram."""
+        """Na virada, as marcações do dia anterior saem. A reserva deste dia fica."""
         if self._meta("picks_day") == day:
             return 0
         with self._connection:
             amazon = self._connection.execute(
-                "UPDATE catalog_books SET picked = 0, pick_seq = 0 WHERE picked = 1"
+                """
+                UPDATE catalog_books
+                SET picked = 0, pick_seq = 0, pick_state = ''
+                WHERE picked = 1 AND NOT (pick_state = 'reserva' AND pick_day = ?)
+                """,
+                (day,),
             ).rowcount
             mercado = self._connection.execute(
-                "UPDATE ml_books SET picked = 0, pick_seq = 0 WHERE picked = 1"
+                """
+                UPDATE ml_books
+                SET picked = 0, pick_seq = 0, pick_state = ''
+                WHERE picked = 1 AND NOT (pick_state = 'reserva' AND pick_day = ?)
+                """,
+                (day,),
             ).rowcount
             self._remember("picks_day", day)
         return int(amazon) + int(mercado)
@@ -385,6 +594,7 @@ def parse_rows(rows: list[dict[str, str]], *, kind: str = "amazon") -> list[Cata
                 store="ml" if mercado else "amazon",
                 image_url=ml_picture(row.get("imagem")) if mercado else "",
                 kids=_is_kids(row),
+                not_book=_is_not_book(row),
             )
         )
     books.sort(key=lambda book: (book.position, book.asin))
@@ -592,16 +802,145 @@ def publish_selection(
     resolve_ml=None,
     thumbnail=thumbnail_url,
     describe=None,
+    ordem: str = "mine",
+    enviados: dict[str, tuple[str, ...]] | None = None,
+    obras_enviadas: tuple[tuple[str, str], ...] = (),
+    slots_fixos: list[dict] | None = None,
+    sobras_fixas: list[tuple[str, str]] | None = None,
+    bloqueados_fixos: list[tuple[str, str]] | None = None,
+    livros_extra: list | None = None,
 ) -> str:
-    amazon = [book for book in catalog.picked() if book.price_cents]
-    mercado = [book for book in catalog.ml_picked() if book.price_cents]
-    pairs = pair_posts(amazon, mercado, catalog.books(), catalog.ml_books())
+    from datetime import date, timedelta
+
+    schedule = store.send_schedule()
+    if slots_fixos is not None:
+        return _publish_fixed(
+            catalog,
+            store,
+            day,
+            slots_fixos,
+            sobras_fixas or [],
+            bloqueados_fixos or [],
+            cards_dir,
+            resolve_urls,
+            download,
+            resolve_ml,
+            thumbnail,
+            describe,
+            livros_extra,
+        )
+    amazon_books, ml_books = catalog.queue_for(day)
+    fila = montar_fila(
+        [item_de_livro(book) for book in amazon_books],
+        [item_de_livro(book) for book in ml_books],
+        OpcoesFila(
+            agora=now_clock,
+            inicio=schedule.start,
+            fim=schedule.end,
+            intervalo=schedule.post_interval_minutes,
+            enviados=enviados or {},
+            ordem=ordem if ordem in {"mine", "desc", "mix"} else "mine",
+            obras_enviadas=obras_enviadas,
+        ),
+    )
+    by_id = {book.asin: book for book in (*amazon_books, *ml_books)}
+    pairs = []
+    for slot in fila.slots:
+        book = by_id.get(slot.amazon.id) if slot.amazon else None
+        alt = by_id.get(slot.ml.id) if slot.ml else None
+        if book is None and alt is not None:
+            book, alt = alt, None
+        if book is not None:
+            pairs.append((book, alt))
     if not pairs:
         raise CatalogError("Marque pelo menos um livro com preço.")
-    clocks, late = repack_clocks(store.send_schedule(), now_clock, min(len(pairs), 60))
+    clocks = [slot.clock for slot in fila.slots]
     if not clocks:
         raise CatalogError("O horário de envio de hoje já acabou. A marcação ficou salva.")
-    chosen = pairs[: len(clocks)]
+    notice = _gravar_posts(
+        store,
+        day,
+        pairs,
+        clocks,
+        cards_dir,
+        resolve_urls,
+        download,
+        resolve_ml,
+        thumbnail,
+        describe,
+    )
+    tomorrow = (date.fromisoformat(day) + timedelta(days=1)).isoformat()
+    catalog.aplicar_estados(
+        [(item.store, item.id) for slot in fila.slots for item in (slot.amazon, slot.ml) if item],
+        [(item.store, item.id) for item in fila.sobras],
+        [(item.item.store, item.item.id) for item in fila.bloqueados],
+        day,
+        tomorrow,
+    )
+    left = len(fila.sobras)
+    extra = f" {left} marcados foram para a reserva de amanhã." if left else ""
+    return notice.replace(".", f".{extra}", 1)
+
+
+def _publish_fixed(
+    catalog,
+    store,
+    day,
+    slots_fixos,
+    sobras_fixas,
+    bloqueados_fixos,
+    cards_dir,
+    resolve_urls,
+    download,
+    resolve_ml,
+    thumbnail,
+    describe,
+    livros_extra=None,
+) -> str:
+    from datetime import date, timedelta
+
+    by_id = {book.asin: book for book in (*catalog.books(), *catalog.ml_books(), *(livros_extra or []))}
+    pairs = []
+    clocks = []
+    na_fila: list[tuple[str, str]] = []
+    for slot in slots_fixos:
+        amazon = by_id.get(slot.get("amazon") or "")
+        mercado = by_id.get(slot.get("ml") or "")
+        book, alt = amazon, mercado
+        if book is None and alt is not None:
+            book, alt = alt, None
+        if book is None:
+            raise CatalogError("A prévia cita um livro que não está mais no catálogo. Peça outra prévia.")
+        pairs.append((book, alt))
+        clocks.append(slot["clock"])
+        if amazon is not None:
+            na_fila.append(("amazon", amazon.asin))
+        if mercado is not None:
+            na_fila.append(("ml", mercado.asin))
+    if not pairs:
+        raise CatalogError("Marque pelo menos um livro com preço.")
+    notice = _gravar_posts(
+        store, day, pairs, clocks, cards_dir, resolve_urls, download, resolve_ml, thumbnail, describe
+    )
+    tomorrow = (date.fromisoformat(day) + timedelta(days=1)).isoformat()
+    catalog.aplicar_estados(na_fila, sobras_fixas, bloqueados_fixos, day, tomorrow)
+    left = len(sobras_fixas)
+    extra = f" {left} marcados foram para a reserva de amanhã." if left else ""
+    return notice.replace(".", f".{extra}", 1)
+
+
+def _gravar_posts(
+    store,
+    day,
+    chosen,
+    clocks,
+    cards_dir,
+    resolve_urls,
+    download,
+    resolve_ml,
+    thumbnail,
+    describe,
+) -> str:
     prepared = [(book, alt, _covers_for(book, alt, download, thumbnail)) for book, alt in chosen]
     primary_urls = _resolve_mixed([_listing_url(book) for book, _alt, _cover in prepared], resolve_urls, resolve_ml)
     alt_urls = _resolve_mixed(
@@ -618,7 +957,10 @@ def publish_selection(
         )
         if before and is_ml_url(before) and after == before
     ]
-    store.cancel_day(day)
+    if hasattr(store, "replace_scheduled"):
+        store.replace_scheduled(day)
+    else:
+        store.cancel_day(day)
     cards_dir.mkdir(parents=True, exist_ok=True)
     for index, ((book, alt, covers), clock) in enumerate(zip(prepared, clocks)):
         rows = _store_rows(book, alt, primary_urls[index], alt_urls[index])
@@ -634,13 +976,10 @@ def publish_selection(
         for image in covers:
             image.close()
         store.set_image(post_id, f"data/cards/{post_id}.jpg")
-    left = len(pairs) - len(chosen)
-    extra = f" {left} marcados não couberam hoje." if left else ""
-    late_note = f" {late} ficaram depois do fim da janela." if late else ""
     affiliate = ""
     if resolve_ml is not None and raw_ml:
         affiliate = " Os links do Mercado Livre continuam sem afiliado. Cole os cookies em Configurações."
-    return f"{len(chosen)} livros entraram na fila de {day}.{extra}{late_note} Nada foi enviado.{affiliate}"
+    return f"{len(chosen)} livros entraram na fila de {day}. Nada foi enviado.{affiliate}"
 
 
 def _fetch_cover(asin: str, download) -> Image.Image:
@@ -702,6 +1041,9 @@ def _book(row: sqlite3.Row, *, store: str = "amazon") -> CatalogBook:
         store=store,
         image_url=str(row["image_url"] or "") if "image_url" in row.keys() else "",
         kids=bool(row["kids"]) if "kids" in row.keys() else False,
+        not_book=bool(row["not_book"]) if "not_book" in row.keys() else False,
+        pick_state=str(row["pick_state"]) if "pick_state" in row.keys() else "",
+        pick_day=str(row["pick_day"]) if "pick_day" in row.keys() else "",
     )
 
 
@@ -720,12 +1062,62 @@ def _row_values(book: CatalogBook, kept: set[str]) -> tuple:
     )
 
 
-def _is_kids(row: dict[str, str]) -> bool:
-    blob = " ".join(
+_KIDS_WORDS = (
+    "colorir",
+    "pintura",
+    "pop up",
+    "popup",
+    "primeiros",
+    "caligrafia",
+    "livrinhos",
+    "infantil",
+    "infantojuvenil",
+    "bebe",
+    "atividades",
+    "adesivos",
+    "piadas e charadas",
+)
+_HARD_KIDS = ("infantil", "infantojuvenil", "bebe", "livrinhos")
+_STATIONERY = ("figurinha", "album", "envelopes", "caneta", "marcador")
+_OUTSIDE = ("papelaria", "escritorio", "material escolar", "copa do mundo")
+
+
+def _blob(row: dict[str, str]) -> str:
+    raw = " ".join(
         row.get(name) or ""
         for name in ("titulo", "categoria", "categoria_caminho", "categoria_mais_vendido", "badges")
-    ).casefold()
-    return "infantil" in blob or "infantojuvenil" in blob or "infanto-juvenil" in blob
+    )
+    normalized = unicodedata.normalize("NFD", raw)
+    stripped = "".join(char for char in normalized if not unicodedata.combining(char))
+    return re.sub(r"[^a-z0-9]+", " ", stripped.casefold()).strip()
+
+
+def _is_kids(row: dict[str, str]) -> bool:
+    blob = _blob(row)
+    if not blob:
+        return False
+    adult_coloring = "adulto" in blob and any(word in blob for word in ("colorir", "pintura"))
+    if adult_coloring and not any(word in blob for word in _HARD_KIDS):
+        return False
+    return any(word in blob for word in _KIDS_WORDS)
+
+
+def _is_not_book(row: dict[str, str]) -> bool:
+    title = _blob({"titulo": row.get("titulo") or ""})
+    category = _blob(
+        {
+            "titulo": "",
+            "categoria": row.get("categoria") or "",
+            "categoria_caminho": row.get("categoria_caminho") or "",
+        }
+    )
+    if any(word in title for word in _STATIONERY):
+        return True
+    if "adesivo" in title and ("kit" in title or "papelaria" in category):
+        return True
+    if any(word in category for word in _OUTSIDE) and "livro" not in category:
+        return True
+    return False
 
 
 def _category(row: dict[str, str]) -> str:
@@ -784,6 +1176,7 @@ def _payload(book: CatalogBook, url: str, blurb: str = "") -> dict:
         "lowest_label": "Menor preço em 365 dias." if book.low_365 else "",
         "coupon": "",
         "url": url,
+        "product_id": book.asin,
     }
 
 
@@ -806,6 +1199,7 @@ def _board_book(payload: dict) -> BoardBook:
         lowest_label=str(payload["lowest_label"]),
         url=str(payload["url"]),
         coupon="",
+        product_id=str(payload.get("product_id") or ""),
     )
 
 

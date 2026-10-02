@@ -1,28 +1,32 @@
 """A fila que a Curadoria mostra. Cada post leva uma oferta da Amazon e uma do Mercado Livre."""
 from __future__ import annotations
 
-from promo_livros.book_match import pair_posts
+from promo_livros.fila import OpcoesFila, item_de_livro, montar_fila
 from promo_livros.formatter import format_brl
 
 
 def plan_rows(amazon_picks: list, ml_picks: list, clocks: list[str]) -> list[dict]:
     """Uma linha por post, com o lugar de cada loja. Lugar vazio é marcação que ficou sem par."""
-    amazon = [book for book in amazon_picks if book.price_cents]
-    mercado = [book for book in ml_picks if book.price_cents]
-    rows = []
-    for index, (book, alt) in enumerate(pair_posts(amazon, mercado, amazon, mercado)):
-        slots = {"amazon": None, "ml": None}
-        for item in (book, alt):
-            if item is not None:
-                slots[_store_of(item)] = _slot(item)
-        rows.append(
-            {
-                "clock": clocks[index] if index < len(clocks) else "",
-                "amazon": slots["amazon"],
-                "ml": slots["ml"],
-            }
-        )
-    return rows
+    fila = montar_fila(
+        [item_de_livro(book) for book in amazon_picks],
+        [item_de_livro(book) for book in ml_picks],
+        OpcoesFila(
+            agora="00:00",
+            inicio="00:00",
+            fim="23:59",
+            intervalo=1,
+            horarios=tuple(clocks),
+            ordem="mine",
+        ),
+    )
+    return [
+        {
+            "clock": slot.clock,
+            "amazon": _slot(slot.amazon) if slot.amazon else None,
+            "ml": _slot(slot.ml) if slot.ml else None,
+        }
+        for slot in fila.slots
+    ]
 
 
 def plan_summary(rows: list[dict]) -> dict:
@@ -36,14 +40,13 @@ def plan_summary(rows: list[dict]) -> dict:
     }
 
 
-def _store_of(book) -> str:
-    return "ml" if getattr(book, "store", "amazon") == "ml" else "amazon"
-
-
-def _slot(book) -> dict:
+def _slot(item) -> dict:
+    price = ""
+    if item.price_cents:
+        price = format_brl(item.price_cents)
     return {
-        "asin": book.asin,
-        "title": book.title,
-        "price": format_brl(book.price_cents) if book.price_cents else "",
-        "store": _store_of(book),
+        "asin": item.id,
+        "title": item.title,
+        "price": price,
+        "store": item.store,
     }

@@ -24,17 +24,18 @@ _MONTHS = (
 )
 _ABAS = (
     ("todas", "Todos"),
-    ("fila", "Na fila"),
+    ("fila", "Fila"),
     ("enviadas", "Enviados"),
-    ("falha", "Com falha"),
+    ("falha", "Falhas"),
+    ("substituidos", "Substituídos"),
 )
 _STAR = re.compile(r"\*([^*\n]+)\*")
 _ITALIC = re.compile(r"_([^_\n]+)_")
 _BOLD = re.compile(r"\*([^*\n]+)\*")
 _TOOLTIP = (
     "Salvar não muda o horário dos posts que já estão na fila. "
-    "Reorganizar põe os que ainda não saíram nos horários da grade que ainda não passaram, "
-    "na ordem atual. Os que não couberem antes do fim ficam depois dele."
+    "Reorganizar põe os que ainda não saíram nos horários da grade que ainda não passaram "
+    "e tira o que já foi enviado hoje. O que não cabe antes do fim vai para a reserva."
 )
 
 
@@ -50,6 +51,7 @@ def fragments(
     whatsapp: str = "unknown",
     paused_until: str = "",
     members=None,
+    repeat_days: int = 1,
 ) -> dict[str, str]:
     return _pieces(
         day,
@@ -62,6 +64,7 @@ def fragments(
         whatsapp=whatsapp,
         paused_until=paused_until,
         members=members,
+        repeat_days=repeat_days,
     )
 
 
@@ -78,6 +81,7 @@ def page_body(
     whatsapp: str = "unknown",
     paused_until: str = "",
     members=None,
+    repeat_days: int = 1,
 ) -> str:
     data = _pieces(
         day,
@@ -90,6 +94,7 @@ def page_body(
         whatsapp=whatsapp,
         paused_until=paused_until,
         members=members,
+        repeat_days=repeat_days,
     )
     alert = f'<p class="alert" role="alert">{escape(notice)}</p>' if notice else ""
     suggested = escape(_suggested(posts, schedule, now))
@@ -153,7 +158,7 @@ def page_body(
       </noscript>
     </section>
     <aside class="side">
-      {_rules_html(schedule)}
+      {_rules_html(schedule, repeat_days)}
       <section class="panel-card">
         <h2>Envios por hora</h2>
         <div id="hours">{data["hours"]}</div>
@@ -210,6 +215,7 @@ def _pieces(
     whatsapp: str,
     paused_until: str,
     members=None,
+    repeat_days: int = 1,
 ) -> dict[str, str]:
     del day
     chosen = aba if aba in {key for key, _label in _ABAS} or aba == "descartadas" else "todas"
@@ -259,7 +265,11 @@ def _aba_keeps(aba: str, post, now_clock: str | None = None) -> bool:
         return failed
     if aba == "descartadas":
         return post.status == "cancelled"
-    return True
+    if aba == "substituidos":
+        return post.status == "replaced"
+    if aba == "todas":
+        return post.status not in {"cancelled", "replaced"}
+    return False
 
 
 def _toggle(sending: bool) -> str:
@@ -296,7 +306,7 @@ def _plural(count: int, singular: str, plural: str) -> str:
 
 
 def _funnel(posts: list) -> str:
-    programmed = sum(1 for post in posts if post.status != "cancelled")
+    programmed = sum(1 for post in posts if post.status not in {"cancelled", "replaced"})
     sent = sum(1 for post in posts if post.status == "sent")
     queued = sum(1 for post in posts if post.status == "scheduled")
     reached = sum(1 for post in posts for send in post.sends if send.status == "sent")
@@ -407,8 +417,19 @@ def _warn(posts: list, schedule, now_clock: str | None = None, whatsapp: str = "
         if late:
             count = len(late)
             word = "post fica" if count == 1 else "posts ficam"
+            actions = []
+            for post in late:
+                actions.append(
+                    f'<form method="post" action="/hoje/amanha">'
+                    f'<input type="hidden" name="id" value="{post.id}">'
+                    f'<button class="mini ghost" type="submit">Mover para amanhã</button></form>'
+                    f'<form method="post" action="/hoje/apagar">'
+                    f'<input type="hidden" name="id" value="{post.id}">'
+                    f'<button class="mini ghost" type="submit">Descartar</button></form>'
+                )
             notes.append(
                 f'<p class="warn" role="status">{count} {word} depois das {escape(schedule.end)}.</p>'
+                f'<div class="late-actions">{"".join(actions)}</div>'
             )
     return "".join(notes)
 
@@ -655,6 +676,8 @@ def _clock_status(post, now_clock: str | None = None, whatsapp: str = "unknown")
         return "pulado"
     if post.status == "cancelled":
         return "descartado"
+    if post.status == "replaced":
+        return "substituído"
     return "programado"
 
 
@@ -663,7 +686,7 @@ def _hours(posts: list, schedule) -> str:
     done = [0] * 24
     for post in posts:
         hour = _hour(post.clock)
-        if hour is None or post.status == "cancelled":
+        if hour is None or post.status in {"cancelled", "replaced"}:
             continue
         if post.status == "sent":
             done[hour] += 1
@@ -702,7 +725,7 @@ def _hours(posts: list, schedule) -> str:
 def _bands(posts: list) -> str:
     counts = {"até 30%": 0, "30–50%": 0, "50%+": 0}
     for post in posts:
-        if post.status == "cancelled":
+        if post.status in {"cancelled", "replaced"}:
             continue
         discount = post.discount_pct or 0
         if discount >= 50:
@@ -771,7 +794,7 @@ def _groups(posts: list, groups: tuple[str, ...]) -> str:
     return f'<ul class="group-list">{"".join(items)}</ul>'
 
 
-def _rules_html(schedule) -> str:
+def _rules_html(schedule, repeat_days: int = 1) -> str:
     slots = slot_clocks(schedule)
     if slots:
         summary = f"Cabem {len(slots)} posts, de {slots[0]} às {slots[-1]}"
@@ -785,6 +808,7 @@ def _rules_html(schedule) -> str:
         <label class="inline">Parar antes de <input name="end" required value="{escape(schedule.end)}" pattern="[0-2][0-9]:[0-5][0-9]"></label>
         <label class="inline">Minutos entre posts <input name="interval" type="number" min="5" max="180" required value="{schedule.post_interval_minutes}"></label>
         <label class="inline">Segundos entre grupos <input name="gap" type="number" min="5" max="600" required value="{schedule.group_gap_seconds}"></label>
+        <label class="inline">Dias sem repetir o mesmo livro <input name="repeat" type="number" min="1" max="30" required value="{int(repeat_days)}"></label>
         <p class="fit">{escape(summary)}</p>
         <div class="rule-actions">
           <button type="submit">Salvar</button>

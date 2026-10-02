@@ -39,14 +39,14 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(kept[0].category, "Literatura e Ficção")
             self.assertFalse(kept[0].low_365)
             page = render_curation(store.books(), source="de novo", folder_file="amazon_livros_2026-09-29.csv", notice=None)
-            self.assertIn("Só menor preço em 365 dias", page)
-            self.assertIn(">Lista</button>", page)
-            self.assertIn("Minutos entre posts", page)
-            self.assertIn('class="pick"', page)
+            self.assertIn("Menor preço 365d", page)
+            self.assertIn("Ocultar infantis", page)
+            self.assertIn("Mudar em Regras", page)
+            self.assertNotIn("Minutos entre posts", page)
             self.assertIn("Memórias do subsolo", page)
             self.assertIn("R$ 11,12", page)
-            self.assertIn("−44%", page)
-            self.assertIn('data-low="0"', page)
+            self.assertIn('"discount": 44', page)
+            self.assertIn('"low": false', page)
             store.close()
 
     def test_a_new_day_drops_the_marks_and_the_same_day_keeps_them(self) -> None:
@@ -298,7 +298,7 @@ class MercadoLivreCoverTests(unittest.TestCase):
                     notice=None,
                     store="ml",
                 )
-                self.assertIn(f'src="{picture}"', page)
+                self.assertIn(picture, page)
                 self.assertNotIn("evil.test", page)
 
                 seen = []
@@ -332,19 +332,35 @@ class CurationFilterTests(unittest.TestCase):
         self.assertIn('id="sort-by"', page)
         self.assertIn('value="discount">Maior desconto', page)
         self.assertIn('value="price-asc">Menor preço', page)
-        self.assertIn('id="min-discount"', page)
-        self.assertIn('id="max-price"', page)
         self.assertIn('id="only-picked"', page)
         self.assertIn('id="hide-kids"', page)
-        self.assertIn('data-kids="1"', page)
-        self.assertIn('data-kids="0"', page)
-        self.assertIn('href="https://www.amazon.com.br/dp/6550974119"', page)
-        self.assertIn(">Ver produto</a>", page)
-        self.assertIn('data-price="1112"', page)
-        self.assertIn('data-discount="44"', page)
-        self.assertIn('data-savings="878"', page)
-        self.assertIn('data-pos="1"', page)
-        self.assertIn('<option value="Literatura Clássica">Literatura Clássica (1)</option>', page)
+        self.assertIn('id="hide-not-book"', page)
+        self.assertIn("Memórias do subsolo", page)
+        self.assertIn("R$ 11,12", page)
+        self.assertIn('"discount": 44', page)
+        self.assertIn("Literatura Clássica", page)
+
+
+class ContentFlagTests(unittest.TestCase):
+    def test_colorir_infantil_adulto_e_papelaria(self) -> None:
+        from promo_livros.catalog import parse_rows
+
+        header = (
+            "posicao;titulo;autor;categoria;categoria_caminho;formato;preco;preco_de;"
+            "menor_preco_365;badges;categoria_mais_vendido;asin;link\n"
+        )
+        rows = header + "\n".join(
+            [
+                '"1";"Mundo das princesas – para colorir";"";"";"";"";"R$ 10,00";"";"";"";"";"B000000001";"https://www.amazon.com.br/dp/B000000001"',
+                '"2";"Livros de Colorir para Adultos";"";"";"";"";"R$ 20,00";"";"";"";"";"B000000002";"https://www.amazon.com.br/dp/B000000002"',
+                '"3";"Kit caneta marcador";"";"";"Papelaria";"";"R$ 15,00";"R$ 30,00";"";"";"";"MLB1234567";"https://produto.mercadolivre.com.br/MLB-1234567"',
+            ]
+        )
+        books = {book.asin: book for book in parse_rows(parse_csv(rows))}
+        self.assertTrue(books["B000000001"].kids)
+        self.assertFalse(books["B000000002"].kids)
+        mercado = {book.asin: book for book in parse_rows(parse_csv(rows), kind="ml")}
+        self.assertTrue(mercado["MLB1234567"].not_book)
 
 
 class CaptureClockTests(unittest.TestCase):

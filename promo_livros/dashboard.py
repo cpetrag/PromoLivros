@@ -77,7 +77,15 @@ class DashboardApp:
     import_catalog_folder: Callable[[], str] | None = None
     toggle_pick: Callable[..., dict] | None = None
     move_pick: Callable[..., dict] | None = None
-    apply_picks: Callable[[], str] | None = None
+    apply_picks: Callable[..., str] | None = None
+    preview_picks: Callable[..., dict] | None = None
+    undo_queue: Callable[[], str] | None = None
+    fill_picks: Callable[[], dict] | None = None
+    clear_picks: Callable[[], dict] | None = None
+    undo_clear: Callable[[], dict] | None = None
+    undo_fill: Callable[[], dict] | None = None
+    save_order: Callable[[str], dict] | None = None
+    move_tomorrow: Callable[[int], None] | None = None
     catalog_cover: Callable[[str], bytes] | None = None
     save_interval: Callable[[str], dict] | None = None
 
@@ -144,9 +152,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     whatsapp=ctx["whatsapp"],
                     paused_until=ctx["paused_until"],
                     members=ctx["members"],
+                    repeat_days=ctx["repeat_days"],
                 ))
                 return
-            self._html(render_board(
+                self._html(render_board(
                 ctx["day"],
                 ctx["posts"],
                 notice=ctx["notice"],
@@ -158,6 +167,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 whatsapp=ctx["whatsapp"],
                 paused_until=ctx["paused_until"],
                 members=ctx["members"],
+                repeat_days=ctx["repeat_days"],
             ))
             return
         error, view = self.app.today()
@@ -228,9 +238,45 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.app.import_catalog_folder()
             self._redirect("/curadoria", self._token())
             return
+        if path == "/curadoria/fila/previa" and self.app.preview_picks:
+            try:
+                self._json(self.app.preview_picks(_field(form, "ordem")))
+            except Exception as exc:
+                self._json({"error": str(exc)})
+            return
         if path == "/curadoria/fila" and self.app.apply_picks:
-            landed = "/hoje" if self.app.apply_picks() else "/curadoria"
-            self._redirect(landed, self._token())
+            notice = self.app.apply_picks(_field(form, "previa_id"))
+            if not notice:
+                self._json({"error": "A prévia não vale mais. Revise a fila de novo."})
+                return
+            if _field(form, "resposta") == "json":
+                self._json({"ok": True, "message": notice})
+                return
+            self._redirect("/hoje", self._token())
+            return
+        if path == "/curadoria/desfazer" and self.app.undo_queue:
+            try:
+                self._json({"ok": True, "message": self.app.undo_queue()})
+            except Exception as exc:
+                self._json({"error": str(exc)})
+            return
+        if path == "/curadoria/preencher" and self.app.fill_picks:
+            try:
+                self._json(self.app.fill_picks())
+            except Exception as exc:
+                self._json({"error": str(exc)})
+            return
+        if path == "/curadoria/desmarcar" and self.app.clear_picks:
+            self._json(self.app.clear_picks())
+            return
+        if path == "/curadoria/desmarcar/desfazer" and self.app.undo_clear:
+            self._json(self.app.undo_clear())
+            return
+        if path == "/curadoria/preencher/desfazer" and self.app.undo_fill:
+            self._json(self.app.undo_fill())
+            return
+        if path == "/curadoria/preferencia" and self.app.save_order:
+            self._json(self.app.save_order(_field(form, "ordem")))
             return
         if path == "/assinaturas" and self.app.save_signatures:
             self.app.save_signatures(form)
@@ -251,6 +297,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if path == "/hoje/mover" and self.app.move_post:
             self.app.move_post(_int_field(form, "id"), _int_field(form, "direcao"))
+            self._redirect("/hoje", self._token())
+            return
+        if path == "/hoje/amanha" and self.app.move_tomorrow:
+            self.app.move_tomorrow(_int_field(form, "id"))
             self._redirect("/hoje", self._token())
             return
         if path == "/hoje/apagar" and self.app.cancel_post:
@@ -445,6 +495,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "whatsapp": extra.get("whatsapp") or "unknown",
             "paused_until": extra.get("paused_until") or "",
             "members": extra.get("members"),
+            "repeat_days": extra.get("repeat_days") or 1,
         }
 
     def _json(self, payload: dict) -> None:
@@ -813,6 +864,7 @@ def build_app(config, username: str, password: str) -> DashboardApp:
                 "whatsapp": cached_whatsapp(),
                 "paused_until": paused,
                 "members": read_members(day),
+                "repeat_days": board_store.repeat_days(),
             },
         )
 
@@ -858,6 +910,13 @@ def build_app(config, username: str, password: str) -> DashboardApp:
                 _field(form, "interval"),
                 _field(form, "gap"),
             )
+            repeat = _field(form, "repeat") or board_store.setting("janela_repeticao_dias") or "1"
+            try:
+                days = min(30, max(1, int(repeat)))
+            except ValueError:
+                holder["notice"] = "Os dias sem repetir precisam ser um número de 1 a 30."
+                return
+            board_store.put_setting("janela_repeticao_dias", str(days))
         except ValueError as exc:
             holder["notice"] = str(exc)
             return
@@ -885,37 +944,23 @@ def build_app(config, username: str, password: str) -> DashboardApp:
         holder["notice"] = f"{waiting} {word} da fila. O que já foi enviado continua na lista."
 
     def repack_remaining() -> None:
-        from datetime import datetime
+        from promo_livros.fila_aplicar import reorganizar
 
-        from promo_livros.schedule_plan import zone
-        from promo_livros.send_schedule import repack_clocks
-
-        day = queue_day()
-        posts = board_store.posts_for(day)
-        if not posts:
-            holder["notice"] = "Não há posts para reorganizar."
-            return
-        schedule = board_store.send_schedule()
         now = datetime.now(zone(config.schedule.timezone))
-        now_clock = f"{now.hour:02d}:{now.minute:02d}"
-        clocks, late = repack_clocks(schedule, now_clock, len(posts))
-        if len(clocks) < len(posts):
-            holder["notice"] = "A janela de hoje já fechou. Os horários não mudaram."
-            return
-        board_store.retime_day(day, clocks)
-        if late:
-            fitted = len(clocks) - late
-            if fitted:
-                holder["notice"] = (
-                    f"{fitted} posts foram para {clocks[0]} a {clocks[fitted - 1]}. "
-                    f"{late} não cabem antes das {schedule.end} e ficaram em {clocks[fitted]} a {clocks[-1]}."
-                )
-                return
-            holder["notice"] = (
-                f"A janela fecha às {schedule.end}. Os {len(posts)} posts ficaram em {clocks[0]} a {clocks[-1]}."
-            )
-            return
-        holder["notice"] = f"{len(posts)} posts foram para {clocks[0]} a {clocks[-1]}."
+        holder["notice"] = reorganizar(
+            catalog,
+            board_store,
+            queue_day(),
+            now.strftime("%H:%M"),
+            cards_dir,
+            resolve_urls=resolve_urls,
+            resolve_ml=resolve_ml,
+            thumbnail=lambda item: thumbnail_url(
+                item,
+                cookie=session_from_export(board_store.setting("ml_cookies") or "")[0],
+            ),
+            describe=book_line,
+        )
 
     def reorder_posts(ids: list[int]) -> None:
         if board_store.reorder(queue_day(), ids):
@@ -1046,6 +1091,9 @@ def build_app(config, username: str, password: str) -> DashboardApp:
     )
 
     catalog = CatalogStore(config.sqlite_path)
+    from promo_livros.fila_aplicar import MemoriaPrevia
+
+    previas = MemoriaPrevia()
     catalog_folder = Path("CSV Atualizado")
     cover_cache = Path("data") / "covers"
     board_store.put_setting("curation", "manual")
@@ -1070,8 +1118,8 @@ def build_app(config, username: str, password: str) -> DashboardApp:
         notes.extend(
             _reload_catalog(mercado, catalog.replace_ml, "ml_source_stamp", lambda: len(catalog.ml_picked()))
         )
-        _tag_kids(found, "amazon", "kids_stamp_v2")
-        _tag_kids(mercado, "ml", "ml_kids_stamp_v2")
+        _tag_kids(found, "amazon", "kids_stamp_v3")
+        _tag_kids(mercado, "ml", "ml_kids_stamp_v3")
         return notes
 
     def _tag_kids(path: Path | None, kind: str, stamp_key: str) -> None:
@@ -1125,10 +1173,14 @@ def build_app(config, username: str, password: str) -> DashboardApp:
             notice = " ".join(part for part in [notice, *loaded] if part)
         found = latest_csv(catalog_folder)
         mercado = mercado_livre_csv(catalog_folder)
-        from promo_livros.send_schedule import repack_clocks
+        from promo_livros.fila import horarios_livres
+        from promo_livros.fila_aplicar import previa
 
         now = datetime.now(zone(config.schedule.timezone))
-        clocks, _late = repack_clocks(board_store.send_schedule(), now.strftime("%H:%M"), 60)
+        schedule = board_store.send_schedule()
+        agora = now.strftime("%H:%M")
+        clocks = horarios_livres(schedule.start, schedule.end, schedule.post_interval_minutes, agora)
+        ordem = board_store.setting("curation_order") or "mine"
         mercado_livre = loja == "mercadolivre"
         amazon_books = catalog.books()
         ml_books = catalog.ml_books()
@@ -1154,7 +1206,7 @@ def build_app(config, username: str, password: str) -> DashboardApp:
             captured=capture_clock(active_file, config.schedule.timezone) if active_file else "",
             notice=notice if isinstance(notice, str) else None,
             clocks=clocks,
-            interval=board_store.send_schedule().post_interval_minutes,
+            interval=schedule.post_interval_minutes,
             store="ml" if mercado_livre else "amazon",
             peers=peers,
             covers=covers,
@@ -1162,17 +1214,31 @@ def build_app(config, username: str, password: str) -> DashboardApp:
             photos_ready=session_ready(board_store.setting("ml_cookies") or ""),
             amazon_marked=len(catalog.picked()),
             ml_marked=len(catalog.ml_picked()),
-            plan=_pick_plan(clocks),
+            plan=previa(catalog, board_store, current_day(), agora, ordem, previas),
+            amazon_books=amazon_books,
+            ml_books=ml_books,
+            agora=agora,
+            inicio=schedule.start,
+            fim=schedule.end,
+            ordem=ordem,
+            amazon_file=found.name if found else "",
+            ml_file=mercado.name if mercado else "",
+            amazon_captured=capture_clock(found, config.schedule.timezone) if found else "",
+            ml_captured=capture_clock(mercado, config.schedule.timezone) if mercado else "",
         )
 
     def _pick_plan(clocks: list[str] | None = None) -> list[dict]:
+        from promo_livros.fila import horarios_livres
         from promo_livros.pick_plan import plan_rows
-        from promo_livros.send_schedule import repack_clocks
 
         if clocks is None:
             now = datetime.now(zone(config.schedule.timezone))
-            clocks, _late = repack_clocks(board_store.send_schedule(), now.strftime("%H:%M"), 60)
-        return plan_rows(catalog.picked(), catalog.ml_picked(), clocks)
+            schedule = board_store.send_schedule()
+            clocks = horarios_livres(
+                schedule.start, schedule.end, schedule.post_interval_minutes, now.strftime("%H:%M")
+            )
+        amazon, mercado = catalog.queue_for(current_day())
+        return plan_rows(amazon, mercado, clocks)
 
     def import_catalog_text(text: str) -> str:
         rows = parse_csv(text)
@@ -1203,10 +1269,11 @@ def build_app(config, username: str, password: str) -> DashboardApp:
         return str(holder["curation_notice"])
 
     def toggle_pick(asin: str, picked: bool, loja: str = "amazon") -> dict:
+        day = current_day()
         if loja == "ml":
-            total = catalog.set_ml_picked(asin, picked)
+            total = catalog.set_ml_picked(asin, picked, day)
         else:
-            total = catalog.set_picked(asin, picked)
+            total = catalog.set_picked(asin, picked, day)
         return {"picked": total, "plan": _pick_plan()}
 
     def move_pick(asin: str, loja: str, step: int) -> dict:
@@ -1218,15 +1285,20 @@ def build_app(config, username: str, password: str) -> DashboardApp:
         tag = board_store.setting("ml_tag") or DEFAULT_TAG
         return apply_ml_links(urls, export, tag)
 
-    def apply_picks() -> str:
+    def apply_picks(previa_id: str = "") -> str:
+        from promo_livros.fila_aplicar import aplicar
+
+        if not previa_id:
+            holder["curation_notice"] = "Revise a fila antes de aplicar."
+            return ""
         _sync_catalogs()
-        now = datetime.now(zone(config.schedule.timezone))
         try:
-            notice = publish_selection(
+            notice = aplicar(
                 catalog,
                 board_store,
                 current_day(),
-                now.strftime("%H:%M"),
+                previa_id,
+                previas,
                 cards_dir,
                 resolve_urls=resolve_urls,
                 resolve_ml=resolve_ml,
@@ -1241,6 +1313,109 @@ def build_app(config, username: str, password: str) -> DashboardApp:
             return ""
         holder["notice"] = notice
         return notice
+
+    def preview_picks(ordem: str = "") -> dict:
+        from promo_livros.fila_aplicar import previa
+
+        now = datetime.now(zone(config.schedule.timezone))
+        chosen = ordem if ordem in {"mine", "desc", "mix"} else (board_store.setting("curation_order") or "mine")
+        return previa(catalog, board_store, current_day(), now.strftime("%H:%M"), chosen, previas)
+
+    def undo_queue() -> str:
+        from promo_livros.fila_aplicar import desfazer
+
+        notice = desfazer(catalog, board_store, current_day())
+        holder["notice"] = notice
+        return notice
+
+    def save_order(ordem: str) -> dict:
+        chosen = ordem if ordem in {"mine", "desc", "mix"} else "mine"
+        board_store.put_setting("curation_order", chosen)
+        return preview_picks(chosen)
+
+    def clear_picks() -> dict:
+        previous = catalog.clear_marks()
+        holder["pick_undo"] = previous
+        return {"ok": True, "message": "Marcações tiradas.", "picked": catalog.picked_total()}
+
+    def fill_picks() -> dict:
+        from promo_livros.dashboard_curation import discount_percent
+        from promo_livros.fila import pode_preencher
+
+        day = current_day()
+        enviados = set(board_store.sent_product_clocks(day))
+        added: list[tuple[str, str]] = []
+        plan = preview_picks(board_store.setting("curation_order") or "mine")
+        clocks = plan.get("clocks") or []
+        amazon_count = sum(1 for slot in plan["slots"] if slot.get("amazon"))
+        ml_count = sum(1 for slot in plan["slots"] if slot.get("ml"))
+        gaps = {
+            "amazon": max(0, len(clocks) - amazon_count),
+            "ml": max(0, len(clocks) - ml_count),
+        }
+        pools = {
+            "amazon": sorted(
+                (book for book in catalog.books() if pode_preencher(book, loja="amazon", enviados=enviados)),
+                key=lambda book: (-discount_percent(book), book.title.casefold()),
+            ),
+            "ml": sorted(
+                (book for book in catalog.ml_books() if pode_preencher(book, loja="ml", enviados=enviados)),
+                key=lambda book: (-discount_percent(book), book.title.casefold()),
+            ),
+        }
+        for store, need in gaps.items():
+            for book in pools[store][:need]:
+                if store == "ml":
+                    catalog.set_ml_picked(book.asin, True, day)
+                else:
+                    catalog.set_picked(book.asin, True, day)
+                added.append((store, book.asin))
+        holder["fill_undo"] = added
+        fresh = preview_picks(board_store.setting("curation_order") or "mine")
+        fresh["added"] = [{"store": store, "asin": asin} for store, asin in added]
+        fresh["message"] = f"Marquei {len(added)} livros para completar a fila."
+        return fresh
+
+    def undo_clear() -> dict:
+        rows = holder.get("pick_undo") or []
+        catalog.restore_rows(rows)
+        holder["pick_undo"] = []
+        return {"ok": True, "message": "Marcações de volta.", "picked": catalog.picked_total()}
+
+    def undo_fill() -> dict:
+        added = holder.get("fill_undo") or []
+        day = current_day()
+        for store, asin in added:
+            if store == "ml":
+                catalog.set_ml_picked(asin, False, day)
+            else:
+                catalog.set_picked(asin, False, day)
+        holder["fill_undo"] = []
+        return {"ok": True, "message": "Desfiz o preenchimento.", "picked": catalog.picked_total()}
+
+    def move_tomorrow(post_id: int) -> None:
+        from promo_livros.fila_aplicar import amanha
+        from promo_livros.send_schedule import slot_clocks
+
+        post = board_store.post_by_id(post_id)
+        if post is None:
+            holder["notice"] = "Não encontrei o post."
+            return
+        tomorrow = amanha(queue_day())
+        schedule = board_store.send_schedule()
+        used = {item.clock for item in board_store.posts_for(tomorrow)}
+        clock = ""
+        for candidate in slot_clocks(schedule):
+            if candidate not in used:
+                clock = candidate
+                break
+        if not clock:
+            holder["notice"] = "Amanhã não tem horário livre."
+            return
+        if board_store.move_to_day(post_id, tomorrow, clock):
+            holder["notice"] = f"O post foi para amanhã às {clock}."
+        else:
+            holder["notice"] = "Só dá para mover um post que ainda está na fila."
 
     def catalog_cover(asin: str) -> bytes:
         if asin.startswith("MLB"):
@@ -1350,6 +1525,7 @@ def build_app(config, username: str, password: str) -> DashboardApp:
     opened = board_store.close_past_days(current_day())
     if opened:
         holder["notice"] = f"A fila de ontem saiu ({opened} posts). Ela vale só para a data e a hora."
+    catalog.migrate_pick_states(set(board_store.sent_product_clocks(current_day())), current_day())
     started = _sync_catalogs()
     if started:
         holder["curation_notice"] = " ".join(started)
@@ -1402,6 +1578,14 @@ def build_app(config, username: str, password: str) -> DashboardApp:
         toggle_pick=toggle_pick,
         move_pick=move_pick,
         apply_picks=apply_picks,
+        preview_picks=preview_picks,
+        undo_queue=undo_queue,
+        fill_picks=fill_picks,
+        clear_picks=clear_picks,
+        undo_clear=undo_clear,
+        undo_fill=undo_fill,
+        save_order=save_order,
+        move_tomorrow=move_tomorrow,
         catalog_cover=catalog_cover,
         save_interval=save_interval,
     )
