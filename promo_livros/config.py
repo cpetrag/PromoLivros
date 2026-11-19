@@ -122,10 +122,17 @@ def _build(raw: Mapping, environ: Mapping[str, str], root: Path) -> AppConfig:
         website_enabled=_as_bool(website, "enabled"),
         amz_link_api_url=_amz_link_api_url(environ),
         amz_link_api_token=environ.get("AMZ_TOKEN", "").strip(),
+        shopee_app_id=environ.get("SHOPEE_APP_ID", "").strip(),
+        shopee_secret=environ.get("SHOPEE_SECRET", "").strip(),
+        shopee_sub_id=_shopee_sub_id(environ),
     )
 
 
 _GROUP_ID_RE = re.compile(r"^[0-9-]+@g\.us$")
+
+
+def _shopee_sub_id(environ: Mapping[str, str]) -> str:
+    return environ.get("SHOPEE_SUB_ID", "").strip() or "promolivros"
 
 
 def _amz_link_api_url(environ: Mapping[str, str]) -> str:

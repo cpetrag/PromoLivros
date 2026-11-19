@@ -5,6 +5,7 @@ import re
 from datetime import datetime
 from html import escape
 
+from promo_livros.dashboard_grid import GRID_DIALOGS, render_grid
 from promo_livros.formatter import format_brl
 from promo_livros.send_schedule import slot_clocks, upcoming_clocks
 
@@ -52,8 +53,10 @@ def fragments(
     paused_until: str = "",
     members=None,
     repeat_days: int = 1,
+    arquivo: list | None = None,
+    invites: str = "",
 ) -> dict[str, str]:
-    return _pieces(
+    pieces = _pieces(
         day,
         posts,
         sending=sending,
@@ -65,7 +68,9 @@ def fragments(
         paused_until=paused_until,
         members=members,
         repeat_days=repeat_days,
+        arquivo=arquivo,
     )
+    return {**pieces, "invites": invites}
 
 
 def page_body(
@@ -82,6 +87,8 @@ def page_body(
     paused_until: str = "",
     members=None,
     repeat_days: int = 1,
+    arquivo: list | None = None,
+    invites: str = "",
 ) -> str:
     data = _pieces(
         day,
@@ -95,6 +102,7 @@ def page_body(
         paused_until=paused_until,
         members=members,
         repeat_days=repeat_days,
+        arquivo=arquivo,
     )
     alert = f'<p class="alert" role="alert">{escape(notice)}</p>' if notice else ""
     suggested = escape(_suggested(posts, schedule, now))
@@ -129,8 +137,10 @@ def page_body(
     <a href="/hoje" aria-current="page">Hoje</a>
     <a href="/enviados">Enviados</a>
     <a href="/whatsapp">WhatsApp</a>
+    <a href="/enquetes">Enquetes</a>
     <a href="/grupos">Grupos</a>
     <a href="/assinaturas">Assinaturas</a>
+    <a href="/campanhas">Campanhas</a>
     <a href="/configuracoes">Configurações</a>
     <a href="/curadoria">Curadoria</a>
   </nav>
@@ -145,8 +155,17 @@ def page_body(
         <span class="sr">Buscar por título</span>
         <input id="q" type="search" placeholder="Buscar por título" autocomplete="off">
       </label>
+      <div class="view-switch" role="group" aria-label="Como ver a fila">
+        <button type="button" data-view="lista" aria-pressed="true">Lista</button>
+        <button type="button" data-view="grade" aria-pressed="false">Grade</button>
+      </div>
       <nav class="filters" id="tabs" aria-label="Filtro da fila">{data["tabs"]}</nav>
       <div id="rows">{data["rows"]}</div>
+      <div class="grid-picking-bar" id="grid-picking" role="status" hidden>
+        <span id="grid-picking-text"></span>
+        <button type="button" class="ghost mini" id="grid-picking-cancel">Cancelar</button>
+      </div>
+      <div id="grid" hidden>{data["grid"]}</div>
       <noscript>
         <details class="manual" open>
           <summary>Programar um post</summary>
@@ -158,6 +177,7 @@ def page_body(
       </noscript>
     </section>
     <aside class="side">
+      <div id="invites">{invites}</div>
       {_rules_html(schedule, repeat_days)}
       <section class="panel-card">
         <h2>Envios por hora</h2>
@@ -198,6 +218,7 @@ def page_body(
     <button class="ghost" type="button" id="close-light">Fechar</button>
     <img alt="" id="light-img">
   </dialog>
+  {GRID_DIALOGS}
   <div id="toast" role="status" hidden></div>
 </div>
 """
@@ -216,8 +237,8 @@ def _pieces(
     paused_until: str,
     members=None,
     repeat_days: int = 1,
+    arquivo: list | None = None,
 ) -> dict[str, str]:
-    del day
     chosen = aba if aba in {key for key, _label in _ABAS} or aba == "descartadas" else "todas"
     now_clock = _clock_text(now)
     visible = [post for post in posts if _aba_keeps(chosen, post, now_clock)]
@@ -227,12 +248,13 @@ def _pieces(
         "funnel": _funnel(posts),
         "dayline": _dayline(posts, schedule, now_clock),
         "warn": _warn(posts, schedule, now_clock, whatsapp),
-        "tabs": _tabs(posts, chosen, now_clock),
-        "rows": _rows(visible, posts, chosen, groups, now_clock, whatsapp),
+        "tabs": _tabs(posts, chosen, now_clock, arquivo),
+        "rows": _rows(visible, posts, chosen, groups, now_clock, whatsapp, arquivo),
         "hours": _hours(posts, schedule),
         "bands": _bands(posts),
         "members": _members(members),
         "groups": _groups(posts, groups),
+        "grid": render_grid(posts, schedule, now_clock, day),
     }
 
 
@@ -268,7 +290,7 @@ def _aba_keeps(aba: str, post, now_clock: str | None = None) -> bool:
     if aba == "substituidos":
         return post.status == "replaced"
     if aba == "todas":
-        return post.status not in {"cancelled", "replaced"}
+        return post.status not in {"cancelled", "replaced", "sent"}
     return False
 
 
@@ -434,10 +456,13 @@ def _warn(posts: list, schedule, now_clock: str | None = None, whatsapp: str = "
     return "".join(notes)
 
 
-def _tabs(posts: list, chosen: str, now_clock: str | None = None) -> str:
+def _tabs(posts: list, chosen: str, now_clock: str | None = None, arquivo: list | None = None) -> str:
     links = []
     for key, label in _ABAS:
-        count = sum(1 for post in posts if _aba_keeps(key, post, now_clock))
+        if key == "enviadas" and arquivo is not None:
+            count = len(arquivo)
+        else:
+            count = sum(1 for post in posts if _aba_keeps(key, post, now_clock))
         current = ' aria-current="page"' if key == chosen else ""
         links.append(f'<a href="/hoje?aba={key}"{current}>{escape(label)} {count}</a>')
     return "".join(links)
@@ -450,7 +475,12 @@ def _rows(
     groups: tuple[str, ...],
     now_clock: str | None,
     whatsapp: str = "unknown",
+    arquivo: list | None = None,
 ) -> str:
+    if chosen == "enviadas" and arquivo is not None:
+        if not arquivo:
+            return '<p class="empty-state">Nenhum post enviado ainda.</p>'
+        return "".join(_row(post, groups, [], now_clock, whatsapp) for post in arquivo)
     if not visible:
         if chosen in {"todas", "fila"} and not any(post.status == "scheduled" for post in posts):
             return '<p class="empty-state">Nenhum post na fila — programe o primeiro.</p>'
@@ -499,7 +529,7 @@ def _row(
     <article class="post{dim}" data-id="{post.id}" data-status="{escape(post.status)}" data-title="{escape(title)}"{drag}>
       <div class="when">
         {_grip(post)}
-        <time>{escape(post.clock)}</time>
+        <time>{escape(_when_label(post))}</time>
         <span>{escape(_clock_status(post, now_clock, whatsapp))}</span>
       </div>
       <button type="button" class="thumb-btn js-light" data-src="/cards/{post.id}.jpg" aria-label="Ampliar capa de {escape(title)}">
@@ -517,6 +547,13 @@ def _row(
       {_steps(post)}
     </article>
     """
+
+
+def _when_label(post) -> str:
+    stamp = getattr(post, "day", "") or ""
+    if len(stamp) == 10 and stamp[4] == "-" and stamp[7] == "-":
+        return f"{stamp[8:10]}/{stamp[5:7]} {post.clock}"
+    return post.clock
 
 
 def _grip(post) -> str:
@@ -858,7 +895,7 @@ def _offer_fields(
         if pull
         else "Link da Amazon ou do Mercado Livre."
     )
-    hint = first_hint if required else "A da outra loja. Deixe vazio para o post sair com uma loja só."
+    hint = first_hint if required else "Pode ser da mesma loja. Deixe vazio para o post sair com uma loja só."
     button = (
         f'<button type="button" class="ghost js-pull" data-alvo="{mark}">Puxar dados</button>'
         if pull
@@ -1060,6 +1097,7 @@ BELT_CSS = """
 .warn { color: #7A5410; background: #FBF3E0; border-radius: 10px; padding: 8px 12px; margin: 12px 0 0; }
 .layout { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(240px, 0.8fr); gap: 16px; align-items: start; margin-top: 16px; }
 .side { display: flex; flex-direction: column; gap: 12px; }
+#invites:empty { display: none; }
 .panel-card, .belt article.post {
   background: var(--card); border: 1px solid var(--line); border-radius: 14px;
   box-shadow: 0 1px 1px rgba(27, 31, 36, 0.04);
@@ -1566,7 +1604,7 @@ BELT_JS = r"""
       .then(function (response) { return response.ok ? response.json() : null; })
       .then(function (data) {
         if (!data) return;
-        ["pills", "toggle", "funnel", "dayline", "warn", "tabs", "rows", "hours", "bands", "members", "groups"].forEach(function (id) {
+        ["pills", "toggle", "funnel", "dayline", "warn", "tabs", "rows", "hours", "bands", "members", "groups", "grid", "invites"].forEach(function (id) {
           if (typeof data[id] === "string") fill(id, data[id]);
         });
         applySearch();
@@ -1574,6 +1612,8 @@ BELT_JS = r"""
       .catch(function () {})
       .then(function () { document.body.classList.remove("is-loading"); });
   }
+  window.hojeRefresh = refresh;
+  window.hojeToast = showToast;
   fetch("/hoje/checar", { method: "POST", body: "", redirect: "manual" }).catch(function () {});
   setTimeout(refresh, 6000);
   setInterval(refresh, 30000);

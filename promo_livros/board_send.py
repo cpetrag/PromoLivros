@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
 from promo_livros.board_store import BoardStore
 from promo_livros.models import AppConfig
+from promo_livros.send_gap import gap_open, latest_stamp
 from promo_livros.waha import WahaError
 
 logger = logging.getLogger("promo_livros.board_send")
@@ -28,6 +29,7 @@ def publish_due(
     *,
     root: Path,
     now: datetime,
+    quiet_since: str | None = None,
 ) -> str:
     """Manda o próximo post vencido para um grupo. O intervalo entre grupos segura o seguinte."""
     if not store.sending_enabled():
@@ -36,7 +38,8 @@ def publish_due(
     if not groups:
         return "no_groups"
     schedule = store.send_schedule()
-    post = store.next_due_post(now.date().isoformat(), _clock(now), schedule.end)
+    day = now.date().isoformat()
+    post = store.next_due_post(day, _clock(now), store.send_end_for(day, schedule.end))
     if post is None:
         return "idle"
     if sender.connection_state() != "connected":
@@ -50,7 +53,8 @@ def publish_due(
     if not pending:
         store.mark_sent(post.id)
         return "sent"
-    if not _gap_open(store.last_group_sent_at(), now, schedule.group_gap_seconds):
+    last_sent = latest_stamp((store.last_group_sent_at(), quiet_since), now)
+    if not gap_open(last_sent, now, schedule.group_gap_seconds):
         return "waiting"
     group = pending[0]
     stamp = now.isoformat(timespec="seconds")
@@ -97,15 +101,6 @@ def card_bytes(root: Path, image_path: str) -> bytes | None:
     if resolved.parent != cards or not resolved.is_file():
         return None
     return resolved.read_bytes()
-
-
-def _gap_open(last_sent: str | None, now: datetime, gap_seconds: int) -> bool:
-    if not last_sent:
-        return True
-    previous = datetime.fromisoformat(last_sent)
-    if previous.tzinfo is None and now.tzinfo is not None:
-        previous = previous.replace(tzinfo=now.tzinfo)
-    return now - previous >= timedelta(seconds=gap_seconds)
 
 
 def _clock(now: datetime) -> str:

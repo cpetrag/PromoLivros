@@ -18,6 +18,23 @@ class PageTests(unittest.TestCase):
         self.assertNotIn("Black Livros", html)
         self.assertIn("Usuário ou senha incorretos", html)
 
+    def test_board_shows_the_invite_card_and_the_campaigns_link(self) -> None:
+        from promo_livros.dashboard_pages import render_board
+        from promo_livros.send_schedule import default_schedule
+
+        html = render_board(
+            "2026-11-03",
+            [],
+            notice=None,
+            sending=True,
+            schedule=default_schedule(),
+            invites='<section id="convites">Convites aqui</section>',
+        )
+        self.assertIn("Convites aqui", html)
+        self.assertIn('href="/campanhas">Campanhas</a>', html)
+        self.assertLess(html.index('id="convites"'), html.index('id="regras"'))
+        self.assertIn("#convites .invite", html)
+
     def test_board_is_the_belt(self) -> None:
         from promo_livros.board_store import FeedPost, FeedSend
         from promo_livros.dashboard_pages import render_board
@@ -55,6 +72,34 @@ class PageTests(unittest.TestCase):
         self.assertIn('action="/hoje/reorganizar"', html)
         self.assertIn('action="/hoje/limpar"', html)
         self.assertIn("Programar post", html)
+        self.assertIn('href="/enquetes">Enquetes</a>', html)
+
+    def test_sent_posts_stay_on_the_sent_tab(self) -> None:
+        from promo_livros.board_store import FeedPost
+        from promo_livros.dashboard_pages import render_board, render_settings
+        from promo_livros.send_schedule import default_schedule
+
+        waiting = FeedPost(1, "16:00", "scheduled", "Ainda na fila", 1000, None, "https://www.amazon.com.br/dp/B000000001", ())
+        gone = FeedPost(2, "11:00", "sent", "Já saiu", 1000, None, "https://www.amazon.com.br/dp/B000000002", (), day="2026-10-02")
+        html = render_board("2026-10-03", [waiting, gone], notice=None, sending=True, schedule=default_schedule(), arquivo=[gone])
+        self.assertIn("Ainda na fila", html)
+        self.assertNotIn("Já saiu", html)
+        sent = render_board(
+            "2026-10-03",
+            [waiting, gone],
+            notice=None,
+            sending=True,
+            schedule=default_schedule(),
+            aba="enviadas",
+            arquivo=[gone],
+        )
+        self.assertIn("Já saiu", sent)
+        self.assertIn("02/10 11:00", sent)
+        self.assertNotIn("Últimos 5 dias", sent)
+        settings = render_settings("", "tag", saved=False, ready=False, notice=None, prompt="Fale do livro.")
+        self.assertIn("Prompt da resenha", settings)
+        self.assertIn("Testar resenha", settings)
+        self.assertIn("Fale do livro.", settings)
 
     def test_board_shows_liquid_members(self) -> None:
         from promo_livros.dashboard_pages import render_board
@@ -179,6 +224,14 @@ class ServerTests(unittest.TestCase):
         self.assertIn("Sapiens", body)
         self.assertNotIn('src="/whatsapp/qr"', body)
 
+    def test_logged_in_hoje_sends_the_board_page(self) -> None:
+        from promo_livros.send_schedule import default_schedule
+
+        self.app.board = lambda: ("2026-10-02", [], None, False, default_schedule(), (), {})
+        token = self.app.sessions.login("ana", "certa", "ana", "certa")
+        body = _get(self.server, "/hoje", cookie=token)
+        self.assertIn("Programação do dia", body)
+
     def test_qr_route_without_cookie_is_not_an_image(self) -> None:
         status, content_type, _payload = _get_raw(self.server, "/whatsapp/qr")
         self.assertEqual(status, 200)
@@ -204,6 +257,44 @@ class ServerTests(unittest.TestCase):
         _post_raw(self.server, "/login", headers={"Content-Length": "abc"})
         body = _get(self.server, "/hoje")
         self.assertIn("Entrar", body)
+
+    def test_poll_webhook_accepts_json_without_login(self) -> None:
+        seen: dict[str, object] = {}
+
+        def webhook(body: dict, key: str) -> int:
+            seen["body"] = body
+            seen["key"] = key
+            return 200 if key == "segredo" else 401
+
+        self.app.poll_webhook = webhook
+        status, content_type, payload = _post_raw(
+            self.server,
+            "/whatsapp/webhook",
+            data=b'{"event":"poll.vote"}',
+            headers={"X-Api-Key": "segredo", "Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 200)
+        self.assertIn("application/json", content_type)
+        self.assertNotIn("Entrar", payload.decode("utf-8"))
+        self.assertEqual(seen["key"], "segredo")
+        denied, _, _ = _post_raw(
+            self.server,
+            "/whatsapp/webhook",
+            data=b"{}",
+            headers={"X-Api-Key": "errada"},
+        )
+        self.assertEqual(denied, 401)
+
+    def test_poll_webhook_accepts_large_waha_events(self) -> None:
+        self.app.poll_webhook = lambda _body, _key: 200
+        big = b'{"event":"message","payload":{"body":"' + b"x" * 200_000 + b'"}}'
+        status, _content_type, _payload = _post_raw(
+            self.server,
+            "/whatsapp/webhook",
+            data=big,
+            headers={"X-Api-Key": "segredo", "Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 200)
 
     def setUp(self) -> None:
         book = BookLine(
@@ -355,6 +446,53 @@ class LinkRouteTests(unittest.TestCase):
             server.server_close()
 
 
+class QueueActionRouteTests(unittest.TestCase):
+    def test_route_passes_the_action_and_answers_json(self) -> None:
+        import json
+
+        asked = []
+
+        def queue_action(acao: str, form: dict[str, list[str]]) -> dict:
+            asked.append((acao, form.get("id")))
+            return {"ok": True, "message": "1 post mudou de horário."}
+
+        app = DashboardApp(
+            username="ana",
+            password="certa",
+            sessions=SessionStore(),
+            today=lambda: (None, None),
+            whatsapp=lambda: ("connected", None),
+            qr_png=lambda: b"",
+            group_form=lambda: ([], True, None),
+            save_groups=lambda _ids: None,
+            queue_action=queue_action,
+        )
+        DashboardHandler.app = app
+        server = ThreadingHTTPServer(("127.0.0.1", 0), DashboardHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            body = b"id=7&minutos=20"
+            headers = {
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Content-Length": str(len(body)),
+            }
+            _status, _type, payload = _post_raw(server, "/hoje/empurrar", headers=headers, data=body)
+            self.assertIn(b"Entrar", payload)
+            self.assertEqual(asked, [])
+            token = app.sessions.login("ana", "certa", "ana", "certa")
+            headers["Cookie"] = f"promo_livros_session={token}"
+            status, content_type, payload = _post_raw(server, "/hoje/empurrar", headers=headers, data=body)
+            self.assertEqual(status, 200)
+            self.assertIn("application/json", content_type)
+            self.assertTrue(json.loads(payload)["ok"])
+            _post_raw(server, "/hoje/horarios/desfazer", headers={**headers, "Content-Length": "0"}, data=b"")
+            self.assertEqual(asked, [("empurrar", ["7"]), ("desfazer", None)])
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
 class SaveGroupsTests(unittest.TestCase):
     def test_empty_selection_refuses_when_whatsapp_enabled_in_file(self) -> None:
         yaml_text = """whatsapp:
@@ -375,6 +513,243 @@ website:
                 persist_group_selection(path, [], choices)
             self.assertIn("lista de grupos ficou vazia", str(caught.exception))
             self.assertEqual(path.read_bytes(), original)
+
+
+class CampaignRouteTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.calls: list[tuple] = []
+
+        def upload(campaign_id: int, files: list[bytes]) -> str:
+            self.calls.append(("upload", campaign_id, files))
+            return f"/campanhas/{campaign_id}"
+
+        def choose(form: dict[str, list[str]]) -> str:
+            self.calls.append(("choose", form.get("tipo")))
+            return "ok"
+
+        def image(image_id: int) -> bytes | None:
+            self.calls.append(("image", image_id))
+            return b"\xff\xd8jpeg" if image_id == 5 else None
+
+        def record(name: str, answer: str):
+            def callback(form: dict[str, list[str]]) -> str:
+                self.calls.append((name, form))
+                return answer
+
+            return callback
+
+        campaigns = {
+            "page": lambda: "Lista de campanhas",
+            "detail": lambda campaign_id: f"Detalhe {campaign_id}" if campaign_id == 3 else None,
+            "save_settings": record("save_settings", "/campanhas"),
+            "action": record("action", "/campanhas"),
+            "upload": upload,
+            "image": image,
+            "invites": lambda: "",
+            "choose": choose,
+            "notify": lambda message: self.calls.append(("notify", message)),
+        }
+        self.app = DashboardApp(
+            username="ana",
+            password="certa",
+            sessions=SessionStore(),
+            today=lambda: (None, None),
+            whatsapp=lambda: ("connected", None),
+            qr_png=lambda: b"",
+            group_form=lambda: ([], True, None),
+            save_groups=lambda _ids: None,
+            campaigns=campaigns,
+        )
+        DashboardHandler.app = self.app
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), DashboardHandler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.token = self.app.sessions.login("ana", "certa", "ana", "certa")
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+    def _form_headers(self, body: bytes, *, logged: bool = True) -> dict[str, str]:
+        headers = {"Content-Type": "application/x-www-form-urlencoded", "Content-Length": str(len(body))}
+        if logged:
+            headers["Cookie"] = f"promo_livros_session={self.token}"
+        return headers
+
+    def _multipart(self, *, logged: bool = True) -> tuple[dict[str, str], bytes]:
+        boundary = "----b"
+        body = (
+            f'--{boundary}\r\nContent-Disposition: form-data; name="fotos"; filename="a.png"\r\n\r\n'.encode()
+            + b"\x89PNG\r\nbytes"
+            + f"\r\n--{boundary}--\r\n".encode()
+        )
+        headers = {"Content-Type": f"multipart/form-data; boundary={boundary}", "Content-Length": str(len(body))}
+        if logged:
+            headers["Cookie"] = f"promo_livros_session={self.token}"
+        return headers, body
+
+    def test_pages_need_login(self) -> None:
+        self.assertIn("Entrar", _get(self.server, "/campanhas"))
+        self.assertIn("Entrar", _get(self.server, "/campanhas/3"))
+        self.assertIn("Entrar", _get(self.server, "/campanhas/foto/5.jpg"))
+        self.assertEqual(self.calls, [])
+        self.assertIn("Lista de campanhas", _get(self.server, "/campanhas", cookie=self.token))
+        self.assertIn("Detalhe 3", _get(self.server, "/campanhas/3", cookie=self.token))
+
+    def test_missing_and_oversized_ids_are_404(self) -> None:
+        for path in (
+            "/campanhas/4",
+            "/campanhas/9999999999999",
+            "/campanhas/99999999999999999999999",
+            "/campanhas/abc",
+            "/campanhas/foto/99999999999999999999999.jpg",
+            "/campanhas/foto/abc.jpg",
+        ):
+            with self.subTest(path=path), self.assertRaises(HTTPError) as caught:
+                _get_raw(self.server, path, self.token)
+            self.assertEqual(caught.exception.code, 404)
+
+    def test_photo_route_serves_jpeg(self) -> None:
+        host, port = self.server.server_address[:2]
+        request = Request(
+            f"http://{host}:{port}/campanhas/foto/5.jpg",
+            headers={"Cookie": f"promo_livros_session={self.token}"},
+        )
+        with urlopen(request) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.headers["Content-Type"], "image/jpeg")
+            self.assertEqual(response.headers["X-Content-Type-Options"], "nosniff")
+            self.assertTrue(response.headers["Cache-Control"].startswith("private"))
+            self.assertEqual(response.read(), b"\xff\xd8jpeg")
+        with self.assertRaises(HTTPError):
+            _get_raw(self.server, "/campanhas/foto/6.jpg", self.token)
+
+    def test_upload_reads_the_files_and_goes_back_to_the_campaign(self) -> None:
+        headers, body = self._multipart()
+        status, _type, payload = _post_raw(self.server, "/campanhas/3/fotos", headers=headers, data=body)
+        self.assertEqual(status, 200)
+        self.assertIn(b"Detalhe 3", payload)
+        self.assertEqual(self.calls, [("upload", 3, [b"\x89PNG\r\nbytes"])])
+
+    def test_upload_without_login_does_nothing(self) -> None:
+        headers, body = self._multipart(logged=False)
+        _status, _type, payload = _post_raw(self.server, "/campanhas/3/fotos", headers=headers, data=body)
+        self.assertIn(b"Entrar", payload)
+        self.assertEqual(self.calls, [])
+
+    def test_upload_refuses_a_form_that_is_not_multipart(self) -> None:
+        body = b"fotos=x"
+        _status, _type, payload = _post_raw(self.server, "/campanhas/3/fotos", headers=self._form_headers(body), data=body)
+        self.assertIn(b"Detalhe 3", payload)
+        self.assertEqual([call[0] for call in self.calls], ["notify"])
+
+    def test_upload_refuses_a_body_above_the_limit_without_reading_it(self) -> None:
+        import http.client
+
+        from promo_livros.dashboard import MAX_CAMPAIGN_UPLOAD_BODY
+
+        host, port = self.server.server_address[:2]
+        connection = http.client.HTTPConnection(host, port, timeout=5)
+        try:
+            connection.putrequest("POST", "/campanhas/3/fotos")
+            connection.putheader("Cookie", f"promo_livros_session={self.token}")
+            connection.putheader("Content-Type", "multipart/form-data; boundary=b")
+            connection.putheader("Content-Length", str(MAX_CAMPAIGN_UPLOAD_BODY + 1))
+            connection.endheaders()
+            response = connection.getresponse()
+            self.assertEqual(response.status, 303)
+            self.assertEqual(response.getheader("Location"), "/campanhas/3")
+        finally:
+            connection.close()
+        self.assertEqual([call[0] for call in self.calls], ["notify"])
+        self.assertIn("40 MB", self.calls[0][1])
+
+    def test_upload_without_length_is_refused(self) -> None:
+        import http.client
+
+        host, port = self.server.server_address[:2]
+        connection = http.client.HTTPConnection(host, port, timeout=5)
+        try:
+            connection.putrequest("POST", "/campanhas/3/fotos")
+            connection.putheader("Cookie", f"promo_livros_session={self.token}")
+            connection.putheader("Content-Type", "multipart/form-data; boundary=b")
+            connection.endheaders()
+            self.assertEqual(connection.getresponse().status, 411)
+        finally:
+            connection.close()
+        self.assertEqual(self.calls, [])
+
+    def test_upload_to_an_oversized_id_is_404(self) -> None:
+        headers, body = self._multipart()
+        status, _type, _payload = _post_raw(
+            self.server, "/campanhas/99999999999999999999/fotos", headers=headers, data=body
+        )
+        self.assertEqual(status, 404)
+        self.assertEqual(self.calls, [])
+
+    def test_form_routes_need_login(self) -> None:
+        body = b"acao=apagar&id=3"
+        for path in ("/campanhas/config", "/campanhas/acao", "/hoje/convite"):
+            with self.subTest(path=path):
+                _status, _type, payload = _post_raw(
+                    self.server, path, headers=self._form_headers(body, logged=False), data=body
+                )
+                self.assertIn(b"Entrar", payload)
+        self.assertEqual(self.calls, [])
+
+    def test_cross_origin_posts_are_refused(self) -> None:
+        headers, body = self._multipart()
+        headers["Origin"] = "http://evil.example"
+        status, _type, _payload = _post_raw(self.server, "/campanhas/3/fotos", headers=headers, data=body)
+        self.assertEqual(status, 403)
+        form_body = b"acao=apagar&id=3"
+        form_headers = {**self._form_headers(form_body), "Origin": "http://evil.example"}
+        for path in ("/campanhas/config", "/campanhas/acao", "/hoje/convite"):
+            with self.subTest(path=path):
+                status, _type, _payload = _post_raw(self.server, path, headers=form_headers, data=form_body)
+                self.assertEqual(status, 403)
+        self.assertEqual(self.calls, [])
+
+    def test_settings_and_action_go_through(self) -> None:
+        body = b"acao=apagar&id=3"
+        _post_raw(self.server, "/campanhas/acao", headers=self._form_headers(body), data=body)
+        body = b"fixo=13%3A15&final=10"
+        _post_raw(self.server, "/campanhas/config", headers=self._form_headers(body), data=body)
+        self.assertEqual(
+            self.calls,
+            [
+                ("action", {"acao": ["apagar"], "id": ["3"]}),
+                ("save_settings", {"fixo": ["13:15"], "final": ["10"]}),
+            ],
+        )
+
+    def test_partial_refresh_carries_the_invite_card(self) -> None:
+        import json
+
+        from promo_livros.send_schedule import default_schedule
+
+        self.app.board = lambda: (
+            "2026-11-03",
+            [],
+            None,
+            True,
+            default_schedule(),
+            (),
+            {"invites": '<section id="convites">Enviando 1/3</section>'},
+        )
+        page = _get(self.server, "/hoje", cookie=self.token)
+        self.assertIn('<div id="invites"><section id="convites">Enviando 1/3</section></div>', page)
+        self.assertIn('"invites"', page.split("/hoje/parcial", 1)[1])
+        partial = json.loads(_get(self.server, "/hoje/parcial", cookie=self.token))
+        self.assertEqual(partial["invites"], '<section id="convites">Enviando 1/3</section>')
+
+    def test_idle_connections_time_out(self) -> None:
+        self.assertEqual(DashboardHandler.timeout, 60)
+
+    def test_choose_invite_from_today(self) -> None:
+        self.app.board = None
+        body = b"tipo=fixed&campanha=2"
+        _post_raw(self.server, "/hoje/convite", headers=self._form_headers(body), data=body)
+        self.assertEqual(self.calls, [("choose", ["fixed"])])
 
 
 def _post_raw(

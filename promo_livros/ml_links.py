@@ -53,6 +53,15 @@ def session_ready(raw: str) -> bool:
     return bool(cookie and csrf)
 
 
+def links_de_afiliado(urls: list[str], export: str, tag: str, *, opener=urlopen) -> list[str]:
+    """Converte cada endereço. Sem sessão ou com recusa da API, o erro sobe em vez de sumir."""
+    if not session_ready(export):
+        raise MlLinkError("A sessão do Mercado Livre não está pronta.")
+    cookie, csrf = session_from_export(export)
+    label = (tag or DEFAULT_TAG).strip() or DEFAULT_TAG
+    return [affiliate_url(url, cookie=cookie, csrf=csrf, tag=label, opener=opener) for url in urls]
+
+
 def apply_ml_links(urls: list[str], export: str, tag: str, *, opener=urlopen) -> list[str]:
     """Devolve a mesma quantidade de URLs. Sem sessão ou com erro, o link original fica."""
     result = list(urls)

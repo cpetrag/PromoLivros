@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <title>Fila</title>
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <header>
+    <h1>Fila de hoje</h1>
+    <button type="button" id="config-open">Token</button>
+  </header>
+  <form id="config" hidden>
+    <label>Painel
+      <input id="panel-url" type="url" value="https://painel.promolivros.org">
+    </label>
+    <label>Token
+      <input id="token" type="text" autocomplete="off">
+    </label>
+    <button type="submit">Salvar</button>
+  </form>
+  <p id="status"></p>
+  <label>Ordem
+    <select id="ordem">
+      <option value="mine">Minha ordem</option>
+      <option value="desc">Maior desconto</option>
+      <option value="mix">Intercalar</option>
+    </select>
+  </label>
+  <div id="slots"></div>
+  <details id="sobras" open>
+    <summary>Não cabem hoje</summary>
+    <ul></ul>
+  </details>
+  <div class="actions">
+    <button type="button" id="aplicar">Substituir a fila daqui pra frente</button>
+    <button type="button" id="soltar" class="ghost">Soltar no catálogo</button>
+  </div>
+  <script src="sidepanel.js"></script>
+</body>
+</html>

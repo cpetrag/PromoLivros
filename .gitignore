@@ -1,4 +1,5 @@
 .env
+.env.bak*
 .superpowers/
 .worktrees/
 .venv/
@@ -10,3 +11,7 @@ logs/
 data/
 *.sqlite
 *.sqlite3
+historico-api/config.json
+node_modules/
+waha/waha.env
+waha/sessions/

@@ -9,12 +9,15 @@ from typing import Protocol
 
 import requests
 
+from promo_livros.post_copy import MAX_BLURB_WORDS
+
 logger = logging.getLogger("promo_livros")
 
 _OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 _RESPONSES_URL = "https://api.openai.com/v1/responses"
 _SENTENCE_RE = re.compile(r"^(.+?[.!?])(?:\s|$)")
 _MAX_PITCH_WORDS = 12
+_WORD_CAP = re.compile(r"(?:no\s+)?m[aá]ximo(?:\s+de)?\s+(\d+)\s+palavras", re.I)
 _PRICE_WORDS = ("r$", "preço", "preco", "desconto")
 
 
@@ -69,18 +72,20 @@ class OpenAIBlurb:
         )
         return promo_line(text or "")
 
-    def research(self, *, title: str, author: str = "") -> str | None:
+    def research(self, *, title: str, author: str = "", prompt: str = "") -> str | None:
         """Uma frase de até 12 palavras, achada na internet, ou None se não der."""
         name = " ".join((title or "").split())
         writer = " ".join((author or "").split())
         if not self._api_key or not name:
             return None
-        text = self._research(name, writer)
-        line = promo_line(text or "")
-        if line is not None:
+        chosen = " ".join((prompt or "").split()) or research_prompt()
+        limit = words_allowed(chosen)
+        text = self._research(name, writer, prompt=chosen)
+        line = promo_line(text or "", max_words=limit)
+        if line is not None or not (text or "").strip():
             return line
-        text = self._research(name, writer, shorter=True)
-        return promo_line(text or "")
+        text = self._research(name, writer, shorter=True, prompt=chosen, limit=limit)
+        return promo_line(text or "", max_words=limit)
 
     def summarize(
         self,
@@ -115,12 +120,20 @@ class OpenAIBlurb:
         }
         return one_sentence(self._complete(_system_prompt(self._max_chars), payload["messages"][1]["content"], 120) or "", self._max_chars)
 
-    def _research(self, title: str, author: str, *, shorter: bool = False) -> str | None:
+    def _research(
+        self,
+        title: str,
+        author: str,
+        *,
+        shorter: bool = False,
+        prompt: str = "",
+        limit: int = _MAX_PITCH_WORDS,
+    ) -> str | None:
         who = f"Título: {title}"
         if author:
             who += f"\nAutor: {author}"
         if shorter:
-            who += "\nA frase anterior passou de 12 palavras. Escreva outra, com no máximo 12."
+            who += f"\nA frase anterior passou de {limit} palavras. Escreva outra, com no máximo {limit}."
         try:
             response = self._session.post(
                 _RESPONSES_URL,
@@ -129,7 +142,7 @@ class OpenAIBlurb:
                     "model": self._model,
                     "tools": [{"type": "web_search"}],
                     "input": [
-                        {"role": "system", "content": _research_prompt()},
+                        {"role": "system", "content": prompt or research_prompt()},
                         {"role": "user", "content": who},
                     ],
                 },
@@ -137,19 +150,19 @@ class OpenAIBlurb:
             )
         except requests.RequestException:
             logger.warning("A OpenAI não respondeu. A resenha fica de fora.")
-            return self._research_from_pages(title, author)
+            return self._research_from_pages(title, author, prompt)
         if response.status_code in {401, 403}:
             raise OpenAIAuthError("A chave da OpenAI foi recusada.")
         if response.status_code >= 400:
             logger.warning("A busca na web recusou (HTTP %s). Vou ler páginas públicas.", response.status_code)
-            return self._research_from_pages(title, author)
+            return self._research_from_pages(title, author, prompt)
         try:
             text = _response_text(response.json())
         except ValueError:
-            return self._research_from_pages(title, author)
-        return text or self._research_from_pages(title, author)
+            return self._research_from_pages(title, author, prompt)
+        return text or self._research_from_pages(title, author, prompt)
 
-    def _research_from_pages(self, title: str, author: str) -> str | None:
+    def _research_from_pages(self, title: str, author: str, prompt: str = "") -> str | None:
         notes = self._public_notes(title)
         if not notes:
             return None
@@ -157,7 +170,7 @@ class OpenAIBlurb:
         if author:
             who += f"\nAutor: {author}"
         return self._complete(
-            _research_prompt() + " Use somente os trechos abaixo, que vieram da internet.",
+            (prompt or research_prompt()) + " Use somente os trechos abaixo, que vieram da internet.",
             f"{who}\nTrechos:\n{notes}",
             60,
         )
@@ -242,14 +255,22 @@ def one_sentence(text: str, max_chars: int) -> str | None:
     return f"{trimmed}."
 
 
-def promo_line(text: str) -> str | None:
-    """Aceita uma frase de até 12 palavras, sem preço e sem marca de WhatsApp."""
+def words_allowed(prompt: str) -> int:
+    """O número de palavras que o prompt pediu. Sem isso, a resenha continua em 12."""
+    found = _WORD_CAP.search(prompt or "")
+    if found is None:
+        return _MAX_PITCH_WORDS
+    return min(MAX_BLURB_WORDS, max(4, int(found.group(1))))
+
+
+def promo_line(text: str, max_words: int = _MAX_PITCH_WORDS) -> str | None:
+    """Aceita uma frase curta, sem preço e sem marca de WhatsApp."""
     compact = " ".join(text.replace("*", " ").replace("_", " ").split())
     compact = compact.strip().strip('"').strip("'").strip()
     if not compact:
         return None
     words = compact.rstrip(".!?").split()
-    if not 4 <= len(words) <= _MAX_PITCH_WORDS:
+    if not 4 <= len(words) <= max_words:
         return None
     folded = compact.casefold()
     if any(token in folded for token in _PRICE_WORDS):
@@ -270,6 +291,11 @@ def _pitch_prompt() -> str:
         "Não repita o título. "
         "Não use aspas, emoji, asterisco, sublinhado nem quebra de linha."
     )
+
+
+def research_prompt() -> str:
+    """Instrução padrão das resenhas. Configurações pode trocar este texto."""
+    return _research_prompt()
 
 
 def _research_prompt() -> str:

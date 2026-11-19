@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime
 from html import escape
+from zoneinfo import ZoneInfo
 
 from promo_livros.day_view import NO_BOOK, DayView
 from promo_livros.groups_file import GroupChoice
+from promo_livros.polls import PollDetail, PollSummary
 
 _MONTHS = (
     "janeiro",
@@ -29,8 +32,10 @@ def _nav(current: str) -> str:
         ("Hoje", "/hoje"),
         ("Enviados", "/enviados"),
         ("WhatsApp", "/whatsapp"),
+        ("Enquetes", "/enquetes"),
         ("Grupos", "/grupos"),
         ("Assinaturas", "/assinaturas"),
+        ("Campanhas", "/campanhas"),
         ("Configurações", "/configuracoes"),
         ("Curadoria", "/curadoria"),
     ):
@@ -136,8 +141,12 @@ def render_board(
     paused_until: str = "",
     members=None,
     repeat_days: int = 1,
+    arquivo: list | None = None,
+    invites: str = "",
 ) -> str:
+    from promo_livros.campaign_pages import INVITE_STYLE
     from promo_livros.dashboard_belt import BELT_CSS, BELT_JS, page_body
+    from promo_livros.dashboard_grid import GRID_CSS, GRID_JS
 
     body = page_body(
         day,
@@ -152,14 +161,16 @@ def render_board(
         paused_until=paused_until,
         members=members,
         repeat_days=repeat_days,
+        arquivo=arquivo,
+        invites=invites,
     )
     return _page(
         "Hoje",
         body,
         nav=False,
         body_class="belt-page",
-        extra_style=BELT_CSS,
-        extra_script=BELT_JS,
+        extra_style=BELT_CSS + GRID_CSS + INVITE_STYLE,
+        extra_script=BELT_JS + GRID_JS,
     )
 
 
@@ -198,7 +209,10 @@ def render_sent(lines: list[tuple[str, str, str]]) -> str:
             f"<article class=\"slot\"><time>{escape(when)}</time><div><h2>{escape(title)}</h2><p class=\"muted\">{escape(detail)}</p></div></article>"
             for when, title, detail in lines
         )
-        body = f"<h1>Enviados</h1><div class=\"slots\">{items}</div>"
+        body = (
+            "<h1>Enviados</h1>"
+            f"<div class=\"slots\">{items}</div>"
+        )
     return _page("Enviados", f"<main>{body}</main>", nav=True)
 
 
@@ -284,12 +298,23 @@ def render_signatures(block: str, *, saved: bool, count: int) -> str:
     return _page("Assinaturas", f"<main class=\"panel\">{body}</main>", nav=True)
 
 
-def render_settings(cookies: str, tag: str, *, saved: bool, ready: bool, notice: str | None) -> str:
+def render_settings(
+    cookies: str,
+    tag: str,
+    *,
+    saved: bool,
+    ready: bool,
+    notice: str | None,
+    prompt: str = "",
+    titulo: str = "",
+    autor: str = "",
+    resultado: str = "",
+) -> str:
     status = ""
     if notice:
         status = f'<p class="alert" role="status">{escape(notice)}</p>'
     elif saved and ready:
-        status = '<p class="lede" role="status">Cookies salvos. A sessão do Mercado Livre está pronta.</p>'
+        status = '<p class="lede" role="status">Configurações salvas. A sessão do Mercado Livre está pronta.</p>'
     elif saved:
         status = '<p class="alert" role="status">Salvei, mas não achei o cookie _csrf. Exporte de novo, logado no Mercado Livre.</p>'
     elif cookies and ready:
@@ -307,7 +332,20 @@ def render_settings(cookies: str, tag: str, *, saved: bool, ready: bool, notice:
       <label>Tag de afiliado
         <input name="tag" value="{escape(tag)}" autocomplete="off" spellcheck="false">
       </label>
-      <button type="submit">Salvar</button>
+      <label>Prompt da resenha
+        <textarea name="prompt" rows="10" spellcheck="true">{escape(prompt)}</textarea>
+      </label>
+      <p class="muted">Essa instrução vale para as resenhas geradas na fila. Uma frase curta, em português.</p>
+      <button type="submit" name="acao" value="salvar">Salvar</button>
+      <h2>Testar o prompt</h2>
+      <label>Título
+        <input name="titulo" value="{escape(titulo)}" autocomplete="off">
+      </label>
+      <label>Autor
+        <input name="autor" value="{escape(autor)}" autocomplete="off">
+      </label>
+      <button class="ghost" type="submit" name="acao" value="testar">Testar resenha</button>
+      {f'<p class="lede" role="status">{escape(resultado)}</p>' if resultado else ""}
     </form>
     """
     return _page("Configurações", f"<main class=\"panel\">{body}</main>", nav=True)
@@ -363,6 +401,10 @@ def _pill(label: str) -> str:
     else:
         kind = "neutral"
     return f'<span class="pill {kind}">{escape(label)}</span>'
+
+
+def render_page(title: str, body: str, *, extra_style: str = "", extra_script: str = "") -> str:
+    return _page(title, body, nav=True, extra_style=extra_style, extra_script=extra_script)
 
 
 def _page(
@@ -701,3 +743,192 @@ body.belt-page > .shell {{
 </html>
 
 """
+
+
+_POLL_STATUS = {
+    "agendada": ("Agendada", "wait"),
+    "enviando": ("Enviando", "wait"),
+    "ativa": ("Ativa", "ok"),
+    "encerrando": ("Encerrando", "wait"),
+    "encerrada": ("Encerrada", "neutral"),
+}
+_POLL_PIN = {"24h": "24 horas", "7d": "7 dias", "30d": "30 dias"}
+_POLL_STYLE = """
+.poll-option { margin: 0.85rem 0 1rem; }
+.poll-bar { height: 0.65rem; background: var(--line); border-radius: 999px; overflow: hidden; margin-top: 0.3rem; }
+.poll-bar span { display: block; height: 100%; background: var(--green); }
+.polls { display: grid; gap: 0.6rem; margin: 1rem 0 1.5rem; }
+.polls a.row { display: flex; justify-content: space-between; gap: 1rem; text-decoration: none; color: inherit; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 0.8rem 1rem; }
+.actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 1rem 0; }
+.actions form { margin: 0; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 0.35rem 0.2rem; border-bottom: 1px solid var(--line); }
+"""
+
+
+def render_poll_list(
+    rows: list[PollSummary],
+    groups: list[tuple[str, str]],
+    *,
+    notice: str | None,
+    chat_id: str,
+    status: str,
+) -> str:
+    note = f'<p class="alert" role="status">{escape(notice)}</p>' if notice else ""
+    items = []
+    for row in rows:
+        label, kind = _POLL_STATUS.get(row.status, (row.status, "neutral"))
+        items.append(
+            f"""
+            <a class="row" href="/enquetes/{row.id}">
+              <span><strong>{escape(row.question)}</strong><br><span class="muted">{escape(row.group_name)} · {_when(row.send_at)}</span></span>
+              <span class="pill {kind}">{escape(label)}</span>
+            </a>
+            """
+        )
+    listing = f'<div class="polls">{"".join(items)}</div>' if items else '<p class="muted">Nenhuma enquete nesse filtro.</p>'
+    group_options = ['<option value="">Todos os grupos</option>']
+    form_groups = [
+        '<option value="">Escolha o grupo</option>',
+        '<option value="todos">Todos os grupos</option>',
+    ]
+    for name, group_id in groups:
+        selected = " selected" if group_id == chat_id else ""
+        group_options.append(f'<option value="{escape(group_id)}"{selected}>{escape(name)}</option>')
+        form_groups.append(f'<option value="{escape(group_id)}">{escape(name)}</option>')
+    status_options = ['<option value="">Todos os estados</option>']
+    for value, (label, _kind) in _POLL_STATUS.items():
+        if value in {"enviando", "encerrando"}:
+            continue
+        selected = " selected" if value == status else ""
+        status_options.append(f'<option value="{value}"{selected}>{label}</option>')
+    body = f"""
+    <main>
+      <h1>Enquetes</h1>
+      {note}
+      <form method="get" action="/enquetes">
+        <label>Grupo <select name="grupo">{''.join(group_options)}</select></label>
+        <label>Estado <select name="status">{''.join(status_options)}</select></label>
+        <button class="ghost" type="submit">Filtrar</button>
+      </form>
+      {listing}
+      <h2>Nova enquete</h2>
+      <form method="post" action="/enquetes">
+        <label>Grupo <select name="chat_id" required>{''.join(form_groups)}</select></label>
+        <p class="muted">Todos os grupos envia uma enquete por vez, com a mesma espera dos posts. O resultado soma os votos.</p>
+        <label>Pergunta <input name="pergunta" maxlength="255" required></label>
+        <label>Opções, uma por linha
+          <textarea name="opcoes" rows="6" required placeholder="Ficção&#10;Terror"></textarea>
+        </label>
+        <label class="choice"><input type="checkbox" name="multipla" value="1"> Várias respostas</label>
+        <label>Fixar
+          <select name="fixar">
+            <option value="">Não fixar</option>
+            <option value="24h">24 horas</option>
+            <option value="7d">7 dias</option>
+            <option value="30d">30 dias</option>
+          </select>
+        </label>
+        <label>Enviar em <input type="datetime-local" name="enviar"></label>
+        <label>Encerrar em <input type="datetime-local" name="encerrar"></label>
+        <button type="submit">Agendar</button>
+      </form>
+    </main>
+    """
+    return _page("Enquetes", body, nav=True, extra_style=_POLL_STYLE)
+
+
+def render_poll_detail(
+    poll: PollDetail,
+    *,
+    members: int | None,
+    notice: str | None,
+    zone_name: str,
+) -> str:
+    note = f'<p class="alert" role="status">{escape(notice)}</p>' if notice else ""
+    label, kind = _POLL_STATUS.get(poll.status, (poll.status, "neutral"))
+    bars = []
+    for option in poll.options:
+        count = poll.counts.get(option, 0)
+        percent = round(100 * count / poll.voters) if poll.voters else 0
+        bars.append(
+            f"""
+            <div class="poll-option">
+              <strong>{escape(option)}</strong>
+              <span class="muted">{percent}% · {count}</span>
+              <div class="poll-bar"><span style="width:{percent}%"></span></div>
+            </div>
+            """
+        )
+    if members and members > 0:
+        share = round(100 * poll.voters / members)
+        if poll.batch_size > 1:
+            participation = f"<p>{share}% dos {members} membros, somando os grupos, votaram.</p>"
+        else:
+            participation = f"<p>{share}% dos {members} membros votaram.</p>"
+    else:
+        participation = '<p class="muted">Não consegui contar os membros do grupo agora.</p>'
+    breakdown = ""
+    if poll.batch_size > 1:
+        lines = []
+        for name, status, voters in poll.group_lines:
+            status_label, _kind = _POLL_STATUS.get(status, (status, "neutral"))
+            noun = "votante" if voters == 1 else "votantes"
+            lines.append(f"<li>{escape(name)} · {escape(status_label)} · {voters} {noun}</li>")
+        breakdown = f"<p>Resultado somado de todos os grupos.</p><ul>{''.join(lines)}</ul>"
+    pin = _POLL_PIN.get(poll.pin or "", "sem pin")
+    if poll.pin and not poll.pin_ok and poll.status in {"ativa", "encerrada"}:
+        pin = f"{pin}, não confirmado"
+    failed = f"<p class=\"muted\">{poll.failed_votes} votos não puderam ser lidos.</p>" if poll.failed_votes else ""
+    closes = _when(poll.closes_at) if poll.closes_at else "sem prazo"
+    body = f"""
+    <main>
+      <p><a href="/enquetes">Todas as enquetes</a></p>
+      <h1>{escape(poll.question)}</h1>
+      {note}
+      <p>{escape(poll.group_name)} · <span class="pill {kind}">{escape(label)}</span></p>
+      {breakdown}
+      <p class="muted">{'Várias respostas' if poll.multiple else 'Uma resposta'} · {escape(pin)} · encerra {escape(closes)}</p>
+      <p><strong>{poll.voters} {'votante' if poll.voters == 1 else 'votantes'}</strong></p>
+      {participation}
+      {''.join(bars)}
+      {failed}
+      <h2>Evolução</h2>
+      {_evolution(poll.series, zone_name)}
+      <div class="actions">
+        <form method="post" action="/enquetes/{poll.id}/parcial"><button class="ghost" type="submit">Postar parcial</button></form>
+        <form method="post" action="/enquetes/{poll.id}/encerrar"><button type="submit">Encerrar agora</button></form>
+        <form method="post" action="/enquetes/{poll.id}/fixar"><button class="ghost" type="submit">Fixar</button></form>
+        <form method="post" action="/enquetes/{poll.id}/desafixar"><button class="ghost" type="submit">Desafixar</button></form>
+        <form method="post" action="/enquetes/{poll.id}/duplicar"><button class="ghost" type="submit">Duplicar</button></form>
+        <a href="/enquetes/{poll.id}.csv">Exportar CSV</a>
+      </div>
+    </main>
+    """
+    return _page("Enquetes", body, nav=True, refresh=15, extra_style=_POLL_STYLE)
+
+
+def _when(value: str | None) -> str:
+    if not value:
+        return ""
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError:
+        return value
+    return moment.strftime("%d/%m %H:%M")
+
+
+def _evolution(series: tuple[tuple[int, int], ...], zone_name: str) -> str:
+    if not series:
+        return '<p class="muted">Ainda não há votos.</p>'
+    zone = ZoneInfo(zone_name)
+    rows = []
+    for timestamp, voters in series:
+        seconds = timestamp / 1000 if timestamp > 10_000_000_000 else timestamp
+        moment = datetime.fromtimestamp(seconds, zone)
+        rows.append(f"<tr><td>{escape(moment.strftime('%d/%m %H:%M'))}</td><td>{voters}</td></tr>")
+    return (
+        "<table><thead><tr><th>Hora</th><th>Votantes</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table>"
+    )
+

@@ -227,19 +227,25 @@ No Mac, os arquivos ficam em `/Users/cpetrag/vibecoding/promo-livros/site/` e o 
 
 ## WhatsApp
 
-O envio usa um WAHA só deste bot. A outra esteira, na porta 3000, não foi alterada e a fila dela não é lida.
+O envio passa pela `zapo-bridge/`, um processo Node (biblioteca [zapo-js](https://zapo.to)) sem container. Ela atende o mesmo subconjunto da API do WAHA que o `promo_livros/waha.py` usa, então o Python não mudou: só `WAHA_URL` no `.env` aponta para a porta 4450 (a 4443 e a 4444 ficam presas pelo Docker Desktop). A outra esteira, na porta 3000, não foi alterada e a fila dela não é lida.
 
 | | Promo Livros | Outra esteira |
 | --- | --- | --- |
-| Container | `waha-livros` | `waha` |
-| Porta no Mac | `127.0.0.1:4443` | `127.0.0.1:3000` |
+| Processo | pm2 `zapo-bridge` | container `waha` |
+| Porta no Mac | `127.0.0.1:4450` | `127.0.0.1:3000` |
 | Sessão | `promo-livros` | `esteira` |
-| Volume | `~/waha/sessions-livros` | `~/waha/sessions` |
+| Credenciais | `zapo-bridge/data/zapo.sqlite` | `~/waha/sessions` |
 | Fila | tabela `dispatches` deste SQLite | não é usada aqui |
 
-Imagem `devlikeapro/waha:arm`, versão 2026.9.1, motor GOWS. O processo que dispara precisa rodar no Mac, porque a API escuta só em localhost. `WAHA_URL`, `WAHA_SESSION` e `WAHA_API_KEY` ficam no `.env`.
+A ponte lê `WAHA_API_KEY` e `WAHA_SESSION` do `.env` do projeto. As opções dela (porta, URL do webhook, navegador que aparece no celular) estão em `zapo-bridge/.env.example`. Votos de enquete e comandos `!enquete` chegam ao painel em `BRIDGE_WEBHOOK_URL` (padrão `http://127.0.0.1:8787/whatsapp/webhook`); o `PUT` de webhook do `scripts/_deploy_enquetes.py` responde 501 e não é mais necessário. Para parear, use o QR do [painel](https://painel.promolivros.org). Apagar `zapo-bridge/data/` obriga a parear de novo.
 
-O painel para parear é [esteira.promolivros.org/dashboard](https://esteira.promolivros.org/dashboard). A raiz do mesmo endereço é a página da API. O login é `WAHA_DASHBOARD_USERNAME` e `WAHA_DASHBOARD_PASSWORD` no `.env`. O DNS é o `CNAME esteira` para `569e5fde-a230-46e3-ae6a-a8538a3555eb.cfargotunnel.com`, com proxy, no mesmo túnel do site.
+```
+cd "/Volumes/HD 1Tb/Vibecoding/Promo Livros/zapo-bridge"
+npm ci
+pm2 start ecosystem.config.cjs && pm2 save
+```
+
+O `waha/` antigo (container `waha-livros`) fica só como referência para voltar atrás.
 
 No horário do livro, a fila `dispatches` ganha uma linha por grupo de `whatsapp.groups`. O primeiro grupo sai na hora. Os outros esperam `gap_seconds` (padrão 45). O livro seguinte continua no relógio, às :00, :20 e :40. Se o WhatsApp cair, a linha fica `na_fila` e o minuto seguinte tenta de novo. Às 22:00 o que não saiu expira e o livro não entra nos 30 dias. A tabela é criada na primeira execução depois dessa versão do código.
 
@@ -257,7 +263,9 @@ Não use o Python do Homebrew: ele não tem o PyYAML. O `ps` mostra o caminho do
 
 A página escuta em `127.0.0.1:8787`. Sem `DASHBOARD_USERNAME` e `DASHBOARD_PASSWORD` no `.env`, o processo não sobe. O painel é [painel.promolivros.org](https://painel.promolivros.org). O código novo só aparece depois de reiniciar esse processo. O envio dos posts é outro processo (`promo-livros-envio`) e não sobe junto. Reiniciar o painel apaga a sessão: é preciso entrar de novo.
 
-No túnel `promo-livros` (`~/.cloudflared/promo-livros.yml`), `painel.promolivros.org` aponta para `http://127.0.0.1:8787`. `esteira.promolivros.org/dashboard` continua sendo o painel do WAHA.
+No túnel `promo-livros` (`~/.cloudflared/promo-livros.yml`), `painel.promolivros.org` aponta para `http://127.0.0.1:8787`. A regra de `esteira.promolivros.org` saiu do túnel em 25 out 2026: a ponte não tem painel próprio.
+
+No pm2, o painel é `promo-livros-painel` (`scripts/painel_run.sh`, com o Python do venv).
 
 | Página | Caminho | O que faz |
 | --- | --- | --- |

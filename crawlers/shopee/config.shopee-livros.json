@@ -1,0 +1,22 @@
+{
+  "keyword": "livro",
+  "pasta_saida": "/Volumes/HD 1Tb/Vibecoding/Promo Livros/CSV Atualizado",
+  "paginas_por_consulta": 8,
+  "consultas": [
+    { "id": "geral-vendas", "by": "sales", "facet": "11060034" },
+    { "id": "geral-relevancia", "by": "relevancy", "facet": "11060034" },
+    { "id": "full-vendas", "by": "sales", "facet": "11060034", "full": true },
+    { "id": "sub-vendas", "by": "sales", "facet": "*SUBCATEGORIAS*" }
+  ],
+  "excluir_facets_sub": ["11111986", "11060453", "11060479"],
+  "palavras_extras": [
+    { "keyword": "mangá", "by": "sales" },
+    { "keyword": "box", "by": "sales" }
+  ],
+  "pausa_busca_ms": [2500, 4500],
+  "pausa_pdp_ms": [1500, 3000],
+  "teto_buscas": 250,
+  "timeout_min": 40,
+  "headless": false,
+  "pdp": { "ativo": true, "max_itens": 250 }
+}

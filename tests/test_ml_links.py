@@ -5,6 +5,7 @@ from promo_livros.ml_links import (
     MlLinkError,
     affiliate_url,
     apply_ml_links,
+    links_de_afiliado,
     session_from_export,
     session_ready,
     thumbnail_url,
@@ -107,6 +108,11 @@ class MercadoLivreLinkTests(unittest.TestCase):
                 opener=opener,
             )
         self.assertIn("URL not allowed", str(caught.exception))
+
+    def test_sem_sessao_o_link_de_afiliado_explica_o_erro(self) -> None:
+        with self.assertRaises(MlLinkError) as caught:
+            links_de_afiliado(["https://www.mercadolivre.com.br/livro/p/MLB1111111"], "", "cpetrag1971")
+        self.assertIn("sessão", str(caught.exception))
 
     def test_without_session_the_product_url_stays(self) -> None:
         original = "https://produto.mercadolivre.com.br/MLB-1"

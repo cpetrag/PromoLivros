@@ -112,6 +112,34 @@ class ResearchTests(unittest.TestCase):
         self.assertIn("Pesquise na internet", body["input"][0]["content"])
         self.assertIn("Antoine", body["input"][1]["content"])
 
+    def test_a_custom_prompt_replaces_the_default_instruction(self) -> None:
+        session = _ResearchSession(
+            [
+                _JsonResponse(
+                    200,
+                    {"output": [{"content": [{"type": "output_text", "text": "Uma frase curta sobre o livro."}]}]},
+                )
+            ]
+        )
+        writer = OpenAIBlurb("sk-test", "gpt-4.1-mini", 180, session=session)
+        line = writer.research(title="O Pequeno Príncipe", prompt="Fale só do tema, em uma frase.")
+        self.assertEqual(line, "Uma frase curta sobre o livro.")
+        self.assertEqual(session.calls[0][2]["input"][0]["content"], "Fale só do tema, em uma frase.")
+
+    def test_a_prompt_that_allows_fifteen_words_keeps_the_sentence(self) -> None:
+        sentence = "Um príncipe deixa o asteroide e aprende o que importa nas pessoas que encontra."
+        session = _ResearchSession(
+            [_JsonResponse(200, {"output": [{"content": [{"type": "output_text", "text": sentence}]}]})]
+        )
+        writer = OpenAIBlurb("sk-test", "gpt-4.1-mini", 180, session=session)
+        line = writer.research(
+            title="O Pequeno Príncipe",
+            prompt="Escreva uma única frase, com no máximo 15 palavras.",
+        )
+        self.assertEqual(line, sentence if sentence.endswith(".") else sentence + ".")
+        self.assertEqual(len(session.calls), 1)
+        self.assertEqual(len(line.rstrip(".!?").split()), 14)
+
     def test_a_refused_key_does_not_fall_back_to_public_pages(self) -> None:
         session = _ResearchSession([_JsonResponse(401, {})])
         writer = OpenAIBlurb("sk-test", "gpt-4.1-mini", 180, session=session)

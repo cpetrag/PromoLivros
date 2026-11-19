@@ -6,6 +6,7 @@ import io
 import json
 import re
 import sqlite3
+import threading
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
@@ -20,12 +21,18 @@ from promo_livros.fila import OpcoesFila, item_de_livro, montar_fila
 from promo_livros.ml_links import clean_product_url, is_ml_url, thumbnail_url
 from promo_livros.post_card import download_image, render_card
 from promo_livros.post_copy import render_caption
+from promo_livros.price_log import KEEP_DAYS, PriceLow, PricePoint, lowest_since, today_iso, valid_product_id, window_start
+from promo_livros.price_log import STORES as PRICE_STORES
+from promo_livros.shopee_links import SHOPEE_ID, is_shopee_url
+
+_STORE_ORDER = {"amazon": 0, "ml": 1, "shopee": 2}
 
 _ASIN = re.compile(r"^[A-Z0-9]{10}$")
 _ML_ID = re.compile(r"^MLB\d{6,14}$")
 _REQUIRED = ("asin", "titulo", "menor_preco_365")
 _FOLDER_NAME = "CSV Atualizado"
 _ML_FILE = "mercadolivre-livros.csv"
+_SHOPEE_FILE = "shopee-livros.csv"
 
 
 @dataclass(frozen=True)
@@ -46,14 +53,67 @@ class CatalogBook:
     not_book: bool = False
     pick_state: str = ""
     pick_day: str = ""
+    coupon: str = ""
+
+
+@dataclass(frozen=True)
+class Reviews:
+    count: int | None
+    rating: float | None
+    sold: int | None
+
+
+def parse_reviews(row: dict[str, str]) -> Reviews | None:
+    """Colunas avaliacoes, nota e vendidos do CSV. Valor fora da faixa vira vazio."""
+    count = _whole(row.get("avaliacoes"), limit=100_000_000)
+    sold = _whole(row.get("vendidos"), limit=1_000_000_000)
+    rating = None
+    raw = (row.get("nota") or "").strip().replace(",", ".")
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            value = -1.0
+        if 0 < value <= 5:
+            rating = round(value, 1)
+    if count is None and rating is None and sold is None:
+        return None
+    return Reviews(count, rating, sold)
+
+
+def _whole(value: str | None, *, limit: int) -> int | None:
+    digits = (value or "").strip().replace(".", "")
+    if not digits.isdigit():
+        return None
+    number = int(digits)
+    return number if 0 < number <= limit else None
 
 
 class CatalogError(ValueError):
     pass
 
 
+def _thread_safe(cls):
+    """O painel atende várias abas ao mesmo tempo. O SQLite daqui é uma conexão só."""
+    for name, attr in list(vars(cls).items()):
+        if name.startswith("_") or name == "__init__" or not callable(attr):
+            continue
+
+        def wrap(fn):
+            def inner(self, *args, **kwargs):
+                with self._lock:
+                    return fn(self, *args, **kwargs)
+
+            return inner
+
+        setattr(cls, name, wrap(attr))
+    return cls
+
+
+@_thread_safe
 class CatalogStore:
     def __init__(self, path: Path) -> None:
+        self._lock = threading.RLock()
         self._connection = sqlite3.connect(path, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
         self._connection.execute("PRAGMA journal_mode=WAL")
@@ -106,6 +166,30 @@ class CatalogStore:
         self._ensure_pick_seq("ml_books")
         self._ensure_flags("catalog_books")
         self._ensure_flags("ml_books")
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS catalog_reviews (
+                asin TEXT NOT NULL,
+                store TEXT NOT NULL,
+                reviews INTEGER,
+                rating REAL,
+                sold INTEGER,
+                PRIMARY KEY (store, asin)
+            )
+            """
+        )
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS price_history (
+                store TEXT NOT NULL,
+                product_id TEXT NOT NULL,
+                day TEXT NOT NULL,
+                price_cents INTEGER NOT NULL,
+                list_cents INTEGER,
+                PRIMARY KEY (store, product_id, day)
+            )
+            """
+        )
         self._connection.commit()
 
     def close(self) -> None:
@@ -143,7 +227,10 @@ class CatalogStore:
         books = parse_rows(rows)
         if not books:
             raise CatalogError("O CSV não tem livro com ASIN e título.")
-        # CSV novo substitui a lista. A marcação anterior não volta.
+        # CSV novo substitui a lista. A caixa da extensão fica.
+        incoming = {book.asin for book in books}
+        parked = [book for book in self._caixa_in("catalog_books", store="amazon") if book.asin not in incoming]
+        still = [book.asin for book in self._caixa_in("catalog_books", store="amazon") if book.asin in incoming]
         kept: set[str] = set()
         with self._connection:
             self._connection.execute("DELETE FROM catalog_books")
@@ -156,16 +243,41 @@ class CatalogStore:
                 """,
                 [(*_row_values(book, kept), int(book.kids), int(book.not_book)) for book in books],
             )
+            self._restore_caixa("catalog_books", parked, still)
+            self._save_reviews("amazon", rows)
             self._remember("source", source)
         return len(books)
 
-    def replace_ml(self, rows: list[dict[str, str]], source: str) -> int:
+    def replace_ml(self, rows: list[dict[str, str]], source: str, *, day: str | None = None) -> int:
         books = parse_rows(rows, kind="ml")
         if not books:
             raise CatalogError("O CSV não tem livro do Mercado Livre com título.")
+        return self._replace_second("ml", books, rows, source, day)
+
+    def replace_shopee(self, rows: list[dict[str, str]], source: str, *, day: str | None = None) -> int:
+        books = parse_rows(rows, kind="shopee")
+        if not books:
+            raise CatalogError("O CSV não tem livro da Shopee com id shopid.itemid, título e preço.")
+        return self._replace_second("shopee", books, rows, source, day)
+
+    def shopee_source_name(self) -> str:
+        return self._meta("shopee_source") or ""
+
+    def _replace_second(
+        self, store: str, books: list[CatalogBook], rows: list[dict[str, str]], source: str, day: str | None
+    ) -> int:
+        """ML e Shopee dividem ml_books. O CSV de uma loja só troca as linhas dela."""
+        incoming = {book.asin for book in books}
+        mine = [book for book in self._caixa_in("ml_books", store="ml") if book.store == store]
+        parked = [book for book in mine if book.asin not in incoming]
+        still = [book.asin for book in mine if book.asin in incoming]
         kept: set[str] = set()
+        current = [
+            str(row["asin"]) for row in self._connection.execute("SELECT asin FROM ml_books").fetchall()
+            if _second_store_of(str(row["asin"])) == store
+        ]
         with self._connection:
-            self._connection.execute("DELETE FROM ml_books")
+            self._connection.executemany("DELETE FROM ml_books WHERE asin = ?", [(asin,) for asin in current])
             self._connection.executemany(
                 """
                 INSERT INTO ml_books (
@@ -175,8 +287,85 @@ class CatalogStore:
                 """,
                 [(*_row_values(book, kept), int(book.kids), int(book.not_book), book.image_url) for book in books],
             )
-            self._remember("ml_source", source)
+            self._restore_caixa("ml_books", parked, still)
+            self._save_reviews(store, rows)
+            self._save_prices(
+                [
+                    PricePoint(store, book.asin, day or today_iso(), book.price_cents, book.list_cents)
+                    for book in books
+                    if book.price_cents
+                ]
+            )
+            self._remember("ml_source" if store == "ml" else "shopee_source", source)
         return len(books)
+
+    def record_price_points(self, points: list[PricePoint]) -> int:
+        """Histórico vindo de fora (Shopee, ou dias antigos do ML)."""
+        with self._connection:
+            return self._save_prices(points)
+
+    def price_lows(self, store: str, current: dict[str, int | None], today: str | None = None) -> dict[str, PriceLow]:
+        """Comparação do preço de hoje com os dias anteriores (janela de 365). Fica de fora quem tem pouco histórico."""
+        day = today or today_iso()
+        rows = self._connection.execute(
+            """
+            SELECT product_id, MIN(price_cents) AS lowest, MAX(price_cents) AS highest, MIN(day) AS first_day
+            FROM price_history
+            WHERE store = ? AND day >= ? AND day < ?
+            GROUP BY product_id
+            """,
+            (store, window_start(day), day),
+        ).fetchall()
+        found: dict[str, PriceLow] = {}
+        for row in rows:
+            product_id = str(row["product_id"])
+            low = lowest_since(current.get(product_id), row["lowest"], row["first_day"], day, row["highest"])
+            if low is not None:
+                found[product_id] = low
+        return found
+
+    def _save_prices(self, points: list[PricePoint]) -> int:
+        # Dois CSVs no mesmo dia: fica o menor preço do dia, que é o que importa para "menor preço".
+        values = [
+            (point.store, point.product_id, point.day, point.price_cents, point.list_cents)
+            for point in points
+            if point.store in PRICE_STORES and valid_product_id(point.store, point.product_id) and point.price_cents > 0
+        ]
+        self._connection.executemany(
+            """
+            INSERT INTO price_history (store, product_id, day, price_cents, list_cents) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (store, product_id, day) DO UPDATE SET
+                price_cents = MIN(price_cents, excluded.price_cents),
+                list_cents = COALESCE(excluded.list_cents, list_cents)
+            """,
+            values,
+        )
+        if values:
+            newest = max(value[2] for value in values)
+            self._connection.execute("DELETE FROM price_history WHERE day < ?", (window_start(newest, KEEP_DAYS),))
+        return len(values)
+
+    def reviews(self) -> dict[tuple[str, str], Reviews]:
+        """Avaliações do último CSV de cada loja, por (loja, id)."""
+        rows = self._connection.execute("SELECT asin, store, reviews, rating, sold FROM catalog_reviews").fetchall()
+        return {
+            (str(row["store"]), str(row["asin"])): Reviews(row["reviews"], row["rating"], row["sold"])
+            for row in rows
+        }
+
+    def _save_reviews(self, store: str, rows: list[dict[str, str]]) -> None:
+        # CSV antigo, sem as colunas, apaga as avaliações velhas em vez de mostrar número de outro dia.
+        self._connection.execute("DELETE FROM catalog_reviews WHERE store = ?", (store,))
+        values = []
+        for row in rows:
+            asin = (row.get("asin") or "").strip().upper()
+            found = parse_reviews(row)
+            if asin and found is not None:
+                values.append((asin, store, found.count, found.rating, found.sold))
+        self._connection.executemany(
+            "INSERT OR REPLACE INTO catalog_reviews (asin, store, reviews, rating, sold) VALUES (?, ?, ?, ?, ?)",
+            values,
+        )
 
     def books(self) -> list[CatalogBook]:
         rows = self._connection.execute(
@@ -208,11 +397,11 @@ class CatalogStore:
         return str(row["image_url"] or "") if row is not None else ""
 
     def find_book(self, key: str) -> CatalogBook | None:
-        """Acha o livro pelo ASIN ou pelo id MLB. O CSV do dia já traz título, preço e capa."""
+        """Acha o livro pelo ASIN, pelo id MLB ou pelo shopid.itemid. O CSV do dia já traz título, preço e capa."""
         item = (key or "").strip().upper()
         if not item:
             return None
-        mercado = item.startswith("MLB")
+        mercado = _in_second_store(item)
         table = "ml_books" if mercado else "catalog_books"
         extra = ", image_url" if mercado else ""
         row = self._connection.execute(
@@ -272,8 +461,9 @@ class CatalogStore:
         """Troca de lugar com o marcado vizinho da mesma loja. Isso muda com quem ele forma par."""
         if direction not in (-1, 1):
             return False
-        table = "ml_books" if store == "ml" else "catalog_books"
-        order = [book.asin for book in self._picked_in(table, store=store)]
+        second = store in {"ml", "shopee"}
+        table = "ml_books" if second else "catalog_books"
+        order = [book.asin for book in self._picked_in(table, store="ml" if second else "amazon")]
         key = asin.strip().upper()
         if key not in order:
             return False
@@ -306,7 +496,7 @@ class CatalogStore:
 
     def set_ml_picked(self, item_id: str, picked: bool, day: str = "") -> int:
         key = item_id.strip().upper()
-        if _ML_ID.fullmatch(key) is None:
+        if not _in_second_store(key):
             raise CatalogError("Anúncio inválido.")
         self._write_pick("ml_books", key, picked, day)
         return self.picked_total()
@@ -337,8 +527,8 @@ class CatalogStore:
 
     def annotate_kids(self, rows: list[dict[str, str]], kind: str = "amazon") -> int:
         """Marca infantil e o que não é livro, sem mexer na seleção."""
-        books = parse_rows(rows, kind="ml" if kind == "ml" else "amazon")
-        table = "ml_books" if kind == "ml" else "catalog_books"
+        books = parse_rows(rows, kind=kind if kind in {"ml", "shopee"} else "amazon")
+        table = "ml_books" if kind in {"ml", "shopee"} else "catalog_books"
         with self._connection:
             self._connection.executemany(
                 f"UPDATE {table} SET kids = ?, not_book = ? WHERE asin = ?",
@@ -408,7 +598,7 @@ class CatalogStore:
                 self._set_state(store, asin, "enviado", today, picked=False)
 
     def _set_state(self, store: str, asin: str, state: str, day: str, *, picked: bool) -> None:
-        table = "ml_books" if store == "ml" else "catalog_books"
+        table = "ml_books" if store in {"ml", "shopee"} else "catalog_books"
         self._connection.execute(
             f"""
             UPDATE {table}
@@ -446,7 +636,7 @@ class CatalogStore:
                 "UPDATE ml_books SET picked = 0, pick_seq = 0, pick_state = '', pick_day = ''"
             )
             for row in rows:
-                table = "ml_books" if row["store"] == "ml" else "catalog_books"
+                table = "ml_books" if row["store"] in {"ml", "shopee"} else "catalog_books"
                 self._connection.execute(
                     f"""
                     UPDATE {table}
@@ -460,7 +650,7 @@ class CatalogStore:
         """Devolve marcações sem apagar as outras."""
         with self._connection:
             for row in rows:
-                table = "ml_books" if row["store"] == "ml" else "catalog_books"
+                table = "ml_books" if row["store"] in {"ml", "shopee"} else "catalog_books"
                 self._connection.execute(
                     f"""
                     UPDATE {table}
@@ -487,6 +677,202 @@ class CatalogStore:
                     """
                 )
         return previous
+
+    def caixa(self) -> tuple[list[CatalogBook], list[CatalogBook]]:
+        """Livros marcados na extensão. Não entram na fila até serem aplicados."""
+        return (
+            self._caixa_in("catalog_books", store="amazon"),
+            self._caixa_in("ml_books", store="ml"),
+        )
+
+    def _caixa_in(self, table: str, *, store: str) -> list[CatalogBook]:
+        extra = ", image_url" if table == "ml_books" else ""
+        rows = self._connection.execute(
+            f"""
+            SELECT asin, position, title, author, category, price_cents, list_cents, low_365, url,
+                   picked, kids, not_book, pick_state, pick_day{extra}
+            FROM {table}
+            WHERE pick_state = 'caixa'
+            ORDER BY pick_seq, position, asin
+            """
+        ).fetchall()
+        return [_book(row, store=store) for row in rows]
+
+    def guardar_na_caixa(
+        self,
+        *,
+        product_id: str,
+        title: str,
+        price_cents: int,
+        list_cents: int | None,
+        url: str,
+        image_url: str,
+        author: str,
+        category: str,
+        day: str,
+    ) -> CatalogBook:
+        """Grava o livro visto na loja. Quem já está na fila ou na reserva permanece lá."""
+        key = (product_id or "").strip().upper()
+        mercado = key.startswith("MLB")
+        if mercado:
+            if _ML_ID.fullmatch(key) is None:
+                raise CatalogError("Anúncio inválido.")
+        elif _ASIN.fullmatch(key) is None:
+            raise CatalogError("ASIN inválido.")
+        if price_cents <= 0:
+            raise CatalogError("Esse anúncio está sem preço.")
+        table = "ml_books" if mercado else "catalog_books"
+        clean_title = " ".join((title or "").split())[:300]
+        if not clean_title:
+            raise CatalogError("O anúncio está sem título.")
+        flags = {"titulo": clean_title, "categoria": category or ""}
+        kids = int(_is_kids(flags))
+        not_book = int(_is_not_book(flags))
+        listed = list_cents if list_cents and list_cents > price_cents else None
+        with self._connection:
+            current = self._connection.execute(
+                f"SELECT pick_state, pick_day FROM {table} WHERE asin = ?",
+                (key,),
+            ).fetchone()
+            if current is not None and current["pick_state"] == "enviado" and current["pick_day"] == day:
+                raise CatalogError("Este livro saiu hoje. Ele volta a ficar disponível amanhã.")
+            keep_state = current is not None and current["pick_state"] in {"na_fila", "reserva"}
+            if current is None:
+                last = self._connection.execute(f"SELECT MAX(position) AS last FROM {table}").fetchone()
+                position = int(last["last"] or 0) + 1
+                seq = self._next_caixa_seq(table)
+                if mercado:
+                    self._connection.execute(
+                        """
+                        INSERT INTO ml_books (
+                            asin, position, title, author, category, price_cents, list_cents, low_365, url,
+                            picked, kids, not_book, pick_state, pick_day, pick_seq, image_url
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 0, ?, ?, 'caixa', ?, ?, ?)
+                        """,
+                        (key, position, clean_title, author[:120], category[:120] or "Sem categoria", price_cents, listed, url, kids, not_book, day, seq, image_url),
+                    )
+                else:
+                    self._connection.execute(
+                        """
+                        INSERT INTO catalog_books (
+                            asin, position, title, author, category, price_cents, list_cents, low_365, url,
+                            picked, kids, not_book, pick_state, pick_day, pick_seq
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 0, ?, ?, 'caixa', ?, ?)
+                        """,
+                        (key, position, clean_title, author[:120], category[:120] or "Sem categoria", price_cents, listed, url, kids, not_book, day, seq),
+                    )
+            else:
+                seq = self._next_caixa_seq(table) if not keep_state else None
+                fields = "title = ?, author = ?, category = ?, price_cents = ?, list_cents = ?, url = ?, kids = ?, not_book = ?"
+                values: list = [clean_title, author[:120], category[:120] or "Sem categoria", price_cents, listed, url, kids, not_book]
+                if mercado:
+                    fields += ", image_url = ?"
+                    values.append(image_url)
+                if not keep_state:
+                    fields += ", picked = 0, pick_state = 'caixa', pick_day = ?, pick_seq = ?"
+                    values.extend([day, seq])
+                values.append(key)
+                self._connection.execute(f"UPDATE {table} SET {fields} WHERE asin = ?", values)
+        found = self.find_book(key)
+        if found is None:
+            raise CatalogError("Não guardei o livro.")
+        return found
+
+    def _restore_caixa(self, table: str, parked: list[CatalogBook], still: list[str]) -> None:
+        for seq, book in enumerate(parked, start=1):
+            if table == "ml_books":
+                self._connection.execute(
+                    """
+                    INSERT INTO ml_books (
+                        asin, position, title, author, category, price_cents, list_cents, low_365, url,
+                        picked, kids, not_book, pick_state, pick_day, pick_seq, image_url
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'caixa', ?, ?, ?)
+                    """,
+                    (
+                        book.asin, book.position, book.title, book.author, book.category,
+                        book.price_cents, book.list_cents, int(book.low_365), book.url,
+                        int(book.kids), int(book.not_book), book.pick_day, seq, book.image_url,
+                    ),
+                )
+            else:
+                self._connection.execute(
+                    """
+                    INSERT INTO catalog_books (
+                        asin, position, title, author, category, price_cents, list_cents, low_365, url,
+                        picked, kids, not_book, pick_state, pick_day, pick_seq
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'caixa', ?, ?)
+                    """,
+                    (
+                        book.asin, book.position, book.title, book.author, book.category,
+                        book.price_cents, book.list_cents, int(book.low_365), book.url,
+                        int(book.kids), int(book.not_book), book.pick_day, seq,
+                    ),
+                )
+        if still:
+            marks = ",".join("?" for _ in still)
+            self._connection.execute(
+                f"""
+                UPDATE {table}
+                SET picked = 0, pick_state = 'caixa', pick_day = ?
+                WHERE asin IN ({marks})
+                """,
+                ("", *still),
+            )
+
+    def _next_caixa_seq(self, table: str) -> int:
+        row = self._connection.execute(
+            f"SELECT MAX(pick_seq) AS last FROM {table} WHERE pick_state = 'caixa'"
+        ).fetchone()
+        return int(row["last"] or 0) + 1
+
+    def soltar_caixa(self, product_ids: set[str] | None = None) -> int:
+        """Tira da caixa e deixa no catálogo, sem horário."""
+        total = 0
+        with self._connection:
+            for table in ("catalog_books", "ml_books"):
+                if product_ids is None:
+                    done = self._connection.execute(
+                        f"""
+                        UPDATE {table}
+                        SET picked = 0, pick_seq = 0, pick_state = '', pick_day = ''
+                        WHERE pick_state = 'caixa'
+                        """
+                    )
+                else:
+                    keys = [item.strip().upper() for item in product_ids if item.strip()]
+                    if not keys:
+                        continue
+                    marks = ",".join("?" for _ in keys)
+                    done = self._connection.execute(
+                        f"""
+                        UPDATE {table}
+                        SET picked = 0, pick_seq = 0, pick_state = '', pick_day = ''
+                        WHERE pick_state = 'caixa' AND asin IN ({marks})
+                        """,
+                        keys,
+                    )
+                total += int(done.rowcount or 0)
+        return total
+
+    def mover_caixa(self, product_id: str, step: int) -> bool:
+        if step not in (-1, 1):
+            return False
+        key = product_id.strip().upper()
+        table = "ml_books" if _in_second_store(key) else "catalog_books"
+        order = [book.asin for book in self._caixa_in(table, store="ml" if table == "ml_books" else "amazon")]
+        if key not in order:
+            return False
+        place = order.index(key)
+        target = place + step
+        if not 0 <= target < len(order):
+            return False
+        order[place], order[target] = order[target], order[place]
+        with self._connection:
+            self._connection.executemany(
+                f"UPDATE {table} SET pick_seq = ? WHERE asin = ?",
+                [(seq, item) for seq, item in enumerate(order, start=1)],
+            )
+        return True
 
     def id_por_titulo(self, title: str) -> str:
         wanted = (title or "").casefold().strip()
@@ -566,17 +952,26 @@ def parse_rows(rows: list[dict[str, str]], *, kind: str = "amazon") -> list[Cata
     books = []
     seen: set[str] = set()
     mercado = kind == "ml"
-    pattern = _ML_ID if mercado else _ASIN
+    shopee = kind == "shopee"
+    pattern = _ML_ID if mercado else SHOPEE_ID if shopee else _ASIN
     for index, row in enumerate(rows, start=1):
-        asin = (row.get("asin") or "").strip().upper()
+        asin = (row.get("asin") or "").strip().upper().replace(" ", "")
         title = (row.get("titulo") or "").strip()
         if pattern.fullmatch(asin) is None or not title or asin in seen:
             continue
+        raw_url = (row.get("link") or "").strip()
+        if shopee:
+            # Link de outro anúncio postaria o produto errado: a linha sai.
+            linked = shopee_link_id(raw_url)
+            if (linked and linked != asin) or not _cents(row.get("preco")):
+                continue
         seen.add(asin)
         position = _int(row.get("posicao")) or index
-        raw_url = (row.get("link") or "").strip()
         if mercado:
             url = clean_product_url(raw_url) or f"https://produto.mercadolivre.com.br/MLB-{asin[3:]}"
+        elif shopee:
+            shop_id, item_id = asin.split(".")
+            url = f"https://shopee.com.br/product/{shop_id}/{item_id}"
         else:
             url = raw_url or f"https://www.amazon.com.br/dp/{asin}"
         books.append(
@@ -591,8 +986,8 @@ def parse_rows(rows: list[dict[str, str]], *, kind: str = "amazon") -> list[Cata
                 low_365=(row.get("menor_preco_365") or "").casefold() == "sim",
                 url=url,
                 picked=False,
-                store="ml" if mercado else "amazon",
-                image_url=ml_picture(row.get("imagem")) if mercado else "",
+                store="ml" if mercado else "shopee" if shopee else "amazon",
+                image_url=ml_picture(row.get("imagem")) if mercado else shopee_picture(row.get("imagem")) if shopee else "",
                 kids=_is_kids(row),
                 not_book=_is_not_book(row),
             )
@@ -610,18 +1005,41 @@ def ml_picture(value: str | None) -> str:
     return url if _ML_PICTURE.fullmatch(url) else ""
 
 
+_SHOPEE_PICTURE = re.compile(r"https://down-br\.img\.susercontent\.com/file/[A-Za-z0-9_\-]+")
+_SHOPEE_LINK = (
+    re.compile(r"https://shopee\.com\.br/product/(\d+)/(\d+)/?(?:\?.*)?", re.IGNORECASE),
+    re.compile(r"https://shopee\.com\.br/[^?#]+-i\.(\d+)\.(\d+)/?(?:\?.*)?", re.IGNORECASE),
+)
+
+
+def shopee_picture(value: str | None) -> str:
+    """Só aceita capa do CDN da Shopee. Qualquer outra coisa vira vazio."""
+    url = (value or "").strip().replace("http://", "https://", 1).split("?")[0]
+    return url if _SHOPEE_PICTURE.fullmatch(url) else ""
+
+
+def shopee_link_id(url: str | None) -> str:
+    """shopid.itemid do link da Shopee, ou vazio quando o link não é de produto."""
+    text = (url or "").strip()
+    for pattern in _SHOPEE_LINK:
+        match = pattern.fullmatch(text)
+        if match:
+            return f"{match.group(1)}.{match.group(2)}"
+    return ""
+
+
 def catalog_kind(rows: list[dict[str, str]]) -> str:
-    mercado = 0
-    amazon = 0
+    counts = {"ml": 0, "shopee": 0, "amazon": 0}
     for row in rows:
         item = (row.get("asin") or "").strip().upper()
         if _ML_ID.fullmatch(item):
-            mercado += 1
+            counts["ml"] += 1
+        elif SHOPEE_ID.fullmatch(item):
+            counts["shopee"] += 1
         elif _ASIN.fullmatch(item):
-            amazon += 1
-    if mercado > amazon:
-        return "ml"
-    return "amazon"
+            counts["amazon"] += 1
+    best = max(counts, key=lambda kind: (counts[kind], kind == "amazon"))
+    return best if counts[best] else "amazon"
 
 
 _FINISHED_KEYS = ("finished_local", "finished_utc", "finished_at", "captured_at")
@@ -733,6 +1151,16 @@ def mercado_livre_csv(folder: Path) -> Path | None:
     return max(files, key=lambda path: path.name)
 
 
+def shopee_csv(folder: Path) -> Path | None:
+    if not folder.is_dir():
+        return None
+    preferred = folder / _SHOPEE_FILE
+    if preferred.is_file():
+        return preferred
+    files = [path for path in folder.glob("shopee-livros-*.csv") if path.is_file()]
+    return max(files, key=lambda path: path.name) if files else None
+
+
 def load_csv_file(path: Path) -> str:
     resolved = path.resolve()
     if resolved.parent.name != _FOLDER_NAME or resolved.suffix.casefold() != ".csv":
@@ -800,6 +1228,7 @@ def publish_selection(
     resolve_urls=None,
     download=download_image,
     resolve_ml=None,
+    resolve_shopee=None,
     thumbnail=thumbnail_url,
     describe=None,
     ordem: str = "mine",
@@ -809,6 +1238,7 @@ def publish_selection(
     sobras_fixas: list[tuple[str, str]] | None = None,
     bloqueados_fixos: list[tuple[str, str]] | None = None,
     livros_extra: list | None = None,
+    replace_after: str | None = None,
 ) -> str:
     from datetime import date, timedelta
 
@@ -825,9 +1255,11 @@ def publish_selection(
             resolve_urls,
             download,
             resolve_ml,
+            resolve_shopee,
             thumbnail,
             describe,
             livros_extra,
+            replace_after,
         )
     amazon_books, ml_books = catalog.queue_for(day)
     fila = montar_fila(
@@ -866,6 +1298,7 @@ def publish_selection(
         resolve_urls,
         download,
         resolve_ml,
+        resolve_shopee,
         thumbnail,
         describe,
     )
@@ -893,9 +1326,11 @@ def _publish_fixed(
     resolve_urls,
     download,
     resolve_ml,
+    resolve_shopee,
     thumbnail,
     describe,
     livros_extra=None,
+    replace_after=None,
 ) -> str:
     from datetime import date, timedelta
 
@@ -906,21 +1341,32 @@ def _publish_fixed(
     for slot in slots_fixos:
         amazon = by_id.get(slot.get("amazon") or "")
         mercado = by_id.get(slot.get("ml") or "")
-        book, alt = amazon, mercado
-        if book is None and alt is not None:
-            book, alt = alt, None
-        if book is None:
+        shopee = by_id.get(slot.get("shopee") or "")
+        extra = by_id.get(slot.get("extra") or "")
+        items = [item for item in (amazon, mercado, shopee, extra) if item is not None]
+        if not items:
             raise CatalogError("A prévia cita um livro que não está mais no catálogo. Peça outra prévia.")
+        book = items[0]
+        alt = items[1] if len(items) > 1 else None
         pairs.append((book, alt))
         clocks.append(slot["clock"])
-        if amazon is not None:
-            na_fila.append(("amazon", amazon.asin))
-        if mercado is not None:
-            na_fila.append(("ml", mercado.asin))
+        for item in items:
+            na_fila.append((item.store if item.store in {"amazon", "ml", "shopee"} else "amazon", item.asin))
     if not pairs:
         raise CatalogError("Marque pelo menos um livro com preço.")
     notice = _gravar_posts(
-        store, day, pairs, clocks, cards_dir, resolve_urls, download, resolve_ml, thumbnail, describe
+        store,
+        day,
+        pairs,
+        clocks,
+        cards_dir,
+        resolve_urls,
+        download,
+        resolve_ml,
+        resolve_shopee,
+        thumbnail,
+        describe,
+        replace_after,
     )
     tomorrow = (date.fromisoformat(day) + timedelta(days=1)).isoformat()
     catalog.aplicar_estados(na_fila, sobras_fixas, bloqueados_fixos, day, tomorrow)
@@ -938,15 +1384,23 @@ def _gravar_posts(
     resolve_urls,
     download,
     resolve_ml,
+    resolve_shopee,
     thumbnail,
     describe,
+    replace_after=None,
 ) -> str:
     prepared = [(book, alt, _covers_for(book, alt, download, thumbnail)) for book, alt in chosen]
-    primary_urls = _resolve_mixed([_listing_url(book) for book, _alt, _cover in prepared], resolve_urls, resolve_ml)
+    primary_urls = _resolve_mixed(
+        [_listing_url(book) for book, _alt, _cover in prepared],
+        resolve_urls,
+        resolve_ml,
+        resolve_shopee,
+    )
     alt_urls = _resolve_mixed(
         [_listing_url(alt) if alt is not None else "" for _book, alt, _cover in prepared],
         resolve_urls,
         resolve_ml,
+        resolve_shopee,
     )
     raw_ml = [
         before
@@ -957,7 +1411,9 @@ def _gravar_posts(
         )
         if before and is_ml_url(before) and after == before
     ]
-    if hasattr(store, "replace_scheduled"):
+    if replace_after and hasattr(store, "replace_scheduled_after"):
+        store.replace_scheduled_after(day, replace_after)
+    elif hasattr(store, "replace_scheduled"):
         store.replace_scheduled(day)
     else:
         store.cancel_day(day)
@@ -993,14 +1449,17 @@ def _covers_for(book: CatalogBook, alt: CatalogBook | None, download, thumbnail)
     items = [book]
     if alt is not None:
         items.append(alt)
-    items.sort(key=lambda item: item.store == "ml")
+    items.sort(key=lambda item: _STORE_ORDER.get(item.store, 9))
     return [_one_cover(item, download, thumbnail) for item in items]
 
 
 def _one_cover(book: CatalogBook, download, thumbnail) -> Image.Image:
-    if book.store != "ml":
+    if book.store == "amazon":
         return _fetch_cover(book.asin, download)
-    thumb = ml_picture(book.image_url) or thumbnail(book.asin)
+    if book.store == "ml":
+        thumb = ml_picture(book.image_url) or thumbnail(book.asin)
+    else:
+        thumb = (book.image_url or "").strip()
     if thumb:
         try:
             return download(thumb)
@@ -1009,10 +1468,15 @@ def _one_cover(book: CatalogBook, download, thumbnail) -> Image.Image:
     return Image.new("RGB", (280, 400), (245, 241, 232))
 
 
-def _resolve_mixed(urls: list[str], resolve_amazon, resolve_ml) -> list[str]:
+def _resolve_mixed(urls: list[str], resolve_amazon, resolve_ml, resolve_shopee=None) -> list[str]:
     result = list(urls)
-    amazon = [(index, url) for index, url in enumerate(urls) if url and not is_ml_url(url)]
+    amazon = [
+        (index, url)
+        for index, url in enumerate(urls)
+        if url and not is_ml_url(url) and not is_shopee_url(url)
+    ]
     mercado = [(index, url) for index, url in enumerate(urls) if url and is_ml_url(url)]
+    shopee = [(index, url) for index, url in enumerate(urls) if url and is_shopee_url(url)]
     if amazon and resolve_amazon is not None:
         got = resolve_amazon([url for _index, url in amazon])
         if isinstance(got, list) and len(got) == len(amazon):
@@ -1023,10 +1487,27 @@ def _resolve_mixed(urls: list[str], resolve_amazon, resolve_ml) -> list[str]:
         if isinstance(got, list) and len(got) == len(mercado):
             for (index, _url), resolved in zip(mercado, got):
                 result[index] = resolved
+    if shopee and resolve_shopee is not None:
+        got = resolve_shopee([url for _index, url in shopee])
+        if isinstance(got, list) and len(got) == len(shopee):
+            for (index, _url), resolved in zip(shopee, got):
+                result[index] = resolved
     return result
 
 
+def _second_store_of(product_id: str) -> str:
+    """ml_books guarda as duas segundas lojas; o formato do id diz qual é."""
+    return "shopee" if SHOPEE_ID.fullmatch(product_id or "") else "ml"
+
+
+def _in_second_store(product_id: str) -> bool:
+    key = (product_id or "").strip().upper()
+    return bool(_ML_ID.fullmatch(key) or SHOPEE_ID.fullmatch(key))
+
+
 def _book(row: sqlite3.Row, *, store: str = "amazon") -> CatalogBook:
+    if store == "ml":
+        store = _second_store_of(str(row["asin"]))
     return CatalogBook(
         asin=str(row["asin"]),
         position=int(row["position"]),
@@ -1162,7 +1643,7 @@ def _store_rows(
     rows = [(book, url)]
     if alt is not None and alt_url:
         rows.append((alt, alt_url))
-    rows.sort(key=lambda item: is_ml_url(item[1]))
+    rows.sort(key=lambda item: _STORE_ORDER.get(item[0].store, 9))
     return rows
 
 
@@ -1174,7 +1655,7 @@ def _payload(book: CatalogBook, url: str, blurb: str = "") -> dict:
         "list_price_cents": book.list_cents,
         "discount_pct": _discount(book.price_cents, book.list_cents),
         "lowest_label": "Menor preço em 365 dias." if book.low_365 else "",
-        "coupon": "",
+        "coupon": (book.coupon or "").strip(),
         "url": url,
         "product_id": book.asin,
     }
@@ -1198,7 +1679,7 @@ def _board_book(payload: dict) -> BoardBook:
         discount_pct=payload["discount_pct"],
         lowest_label=str(payload["lowest_label"]),
         url=str(payload["url"]),
-        coupon="",
+        coupon=str(payload.get("coupon") or ""),
         product_id=str(payload.get("product_id") or ""),
     )
 

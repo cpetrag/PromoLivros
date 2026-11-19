@@ -7,6 +7,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+CLOCK_UNDO_SECONDS = 10 * 60
+
+
 @dataclass(frozen=True)
 class BoardBook:
     title: str
@@ -48,6 +51,15 @@ class FeedSend:
 
 
 @dataclass(frozen=True)
+class FeedBook:
+    title: str
+    price_cents: int
+    discount_pct: float | None
+    url: str
+    product_id: str = ""
+
+
+@dataclass(frozen=True)
 class FeedPost:
     id: int
     clock: str
@@ -63,6 +75,8 @@ class FeedPost:
     list_price_cents: int | None = None
     link_state: str = ""
     live_price_cents: int | None = None
+    day: str = ""
+    shelf: tuple[FeedBook, ...] = ()
 
 
 class BoardStore:
@@ -289,6 +303,20 @@ class BoardStore:
             self._connection.execute("DELETE FROM board_settings WHERE key = 'rush_post_id'")
         return int(cleared)
 
+    def replace_scheduled_after(self, day: str, clock: str) -> int:
+        """Tira só o que ainda está para sair depois deste horário."""
+        with self._lock, self._connection:
+            cleared = self._connection.execute(
+                """
+                UPDATE scheduled_posts
+                SET status = 'replaced', position = -id
+                WHERE day = ? AND status = 'scheduled' AND clock > ?
+                """,
+                (day, clock),
+            ).rowcount
+            self._connection.execute("DELETE FROM board_settings WHERE key = 'rush_post_id'")
+        return int(cleared)
+
     def repeat_days(self) -> int:
         raw = self.setting("janela_repeticao_dias") or "1"
         try:
@@ -386,70 +414,95 @@ class BoardStore:
 
     def day_feed(self, day: str) -> list[FeedPost]:
         with self._lock:
-            rows = self._connection.execute(
-                """
-                SELECT id, clock, status, caption
-                FROM scheduled_posts
-                WHERE day = ?
-                ORDER BY clock, id
-                """,
-                (day,),
-            ).fetchall()
-            posts: list[FeedPost] = []
-            for row in rows:
-                book = self._connection.execute(
-                    """
-                    SELECT title, blurb, price_cents, list_price_cents, discount_pct,
-                           lowest_label, url
-                    FROM scheduled_books
-                    WHERE post_id = ?
-                    ORDER BY sort_order, id
-                    LIMIT 1
-                    """,
-                    (row["id"],),
-                ).fetchone()
-                check = self._connection.execute(
-                    "SELECT state, live_cents FROM board_checks WHERE post_id = ?",
-                    (row["id"],),
-                ).fetchone()
-                sends = tuple(
-                    FeedSend(
-                        group_name=item["group_name"],
-                        status=item["status"],
-                        at=_clock_from_stamp(item["updated_at"]),
-                    )
-                    for item in self._connection.execute(
-                        """
-                        SELECT group_name, status, updated_at
-                        FROM board_sends
-                        WHERE post_id = ?
-                        ORDER BY updated_at, group_name
-                        """,
-                        (row["id"],),
-                    )
-                )
-                title = book["title"] if book else row["caption"].split("\n", 1)[0].strip("* ")
-                posts.append(
-                    FeedPost(
-                        id=row["id"],
-                        clock=row["clock"],
-                        status=row["status"],
-                        title=title,
-                        price_cents=book["price_cents"] if book else 0,
-                        discount_pct=book["discount_pct"] if book else None,
-                        url=book["url"] if book else "",
-                        sends=sends,
-                        caption=row["caption"] or "",
-                        blurb=book["blurb"] if book else "",
-                        lowest_label=book["lowest_label"] if book else "",
-                        list_price_cents=book["list_price_cents"] if book else None,
-                        link_state=check["state"] if check else "",
-                        live_price_cents=check["live_cents"] if check else None,
-                    )
-                )
+            posts = self._feeds("day = ?", (day,), order="clock, id")
         waiting = [post for post in posts if post.status == "scheduled"]
         done = [post for post in posts if post.status != "scheduled"]
         return waiting + done
+
+    def sent_feed(self) -> list[FeedPost]:
+        """Todos os posts enviados, do mais recente ao mais antigo."""
+        with self._lock:
+            return self._feeds(
+                "status = 'sent'",
+                (),
+                order="day DESC, clock DESC, id DESC",
+                stamp_day=True,
+            )
+
+    def _feeds(self, where: str, params: tuple, *, order: str, stamp_day: bool = False) -> list[FeedPost]:
+        rows = self._connection.execute(
+            f"""
+            SELECT id, day, clock, status, caption
+            FROM scheduled_posts
+            WHERE {where}
+            ORDER BY {order}
+            """,
+            params,
+        ).fetchall()
+        posts: list[FeedPost] = []
+        for row in rows:
+            books = self._connection.execute(
+                """
+                SELECT title, blurb, price_cents, list_price_cents, discount_pct,
+                       lowest_label, url, product_id
+                FROM scheduled_books
+                WHERE post_id = ?
+                ORDER BY sort_order, id
+                """,
+                (row["id"],),
+            ).fetchall()
+            book = books[0] if books else None
+            check = self._connection.execute(
+                "SELECT state, live_cents FROM board_checks WHERE post_id = ?",
+                (row["id"],),
+            ).fetchone()
+            sends = tuple(
+                FeedSend(
+                    group_name=item["group_name"],
+                    status=item["status"],
+                    at=_clock_from_stamp(item["updated_at"]),
+                )
+                for item in self._connection.execute(
+                    """
+                    SELECT group_name, status, updated_at
+                    FROM board_sends
+                    WHERE post_id = ?
+                    ORDER BY updated_at, group_name
+                    """,
+                    (row["id"],),
+                )
+            )
+            title = book["title"] if book else row["caption"].split("\n", 1)[0].strip("* ")
+            posts.append(
+                FeedPost(
+                    id=row["id"],
+                    clock=row["clock"],
+                    status=row["status"],
+                    title=title,
+                    price_cents=book["price_cents"] if book else 0,
+                    discount_pct=book["discount_pct"] if book else None,
+                    url=book["url"] if book else "",
+                    sends=sends,
+                    caption=row["caption"] or "",
+                    blurb=book["blurb"] if book else "",
+                    lowest_label=book["lowest_label"] if book else "",
+                    list_price_cents=book["list_price_cents"] if book else None,
+                    link_state=check["state"] if check else "",
+                    live_price_cents=check["live_cents"] if check else None,
+                    day=str(row["day"] or "") if stamp_day else "",
+                    shelf=tuple(
+                        FeedBook(
+                            title=item["title"],
+                            price_cents=item["price_cents"],
+                            discount_pct=item["discount_pct"],
+                            url=item["url"],
+                            product_id=item["product_id"] or "",
+                        )
+                        for item in books
+                    ),
+                )
+            )
+        return posts
 
     def posts_for(self, day: str) -> list[BoardPost]:
         with self._lock:
@@ -472,6 +525,26 @@ class BoardStore:
             row = self._connection.execute(
                 "SELECT 1 FROM scheduled_posts WHERE day = ? AND status = 'scheduled' LIMIT 1",
                 (day,),
+            ).fetchone()
+        return row is not None
+
+    def last_queue_clock(self, day: str, end_clock: str) -> str | None:
+        """Último post do dia antes do fim da janela, agendado ou já enviado. Referência do convite final."""
+        with self._lock:
+            row = self._connection.execute(
+                """
+                SELECT MAX(clock) AS last FROM scheduled_posts
+                WHERE day = ? AND status IN ('scheduled', 'sent') AND clock < ?
+                """,
+                (day, end_clock),
+            ).fetchone()
+        return str(row["last"]) if row and row["last"] else None
+
+    def has_pending_posts(self, day: str, end_clock: str) -> bool:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT 1 FROM scheduled_posts WHERE day = ? AND status = 'scheduled' AND clock < ? LIMIT 1",
+                (day, end_clock),
             ).fetchone()
         return row is not None
 
@@ -641,6 +714,165 @@ class BoardStore:
                     (clocks[index], index + 1, post_id, day),
                 )
             return True
+
+    def queue_clocks(self, day: str) -> list[tuple[int, str]]:
+        with self._lock:
+            return [(post.id, post.clock) for post in self._posts_for(day)]
+
+    def apply_clocks(self, day: str, change, *, extend_end: bool = False, now_ts: float | None = None):
+        """Relê a fila com o banco travado para escrita, aplica a regra e grava só se ela aprovar.
+
+        O envio roda em outro processo. BEGIN IMMEDIATE impede que ele marque um post como enviado
+        entre a leitura e a gravação.
+        """
+        import json
+        import time
+
+        from promo_livros.fila_horarios import Resultado
+
+        stamp = time.time() if now_ts is None else now_ts
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                rows = self._connection.execute(
+                    """
+                    SELECT id, clock, position FROM scheduled_posts
+                    WHERE day = ? AND status = 'scheduled'
+                    ORDER BY clock, position, id
+                    """,
+                    (day,),
+                ).fetchall()
+                result = change([(int(row["id"]), str(row["clock"])) for row in rows])
+                if not result.ok or not result.clocks:
+                    self._connection.rollback()
+                    return result
+                for post_id, clock in result.clocks.items():
+                    updated = self._connection.execute(
+                        "UPDATE scheduled_posts SET clock = ? WHERE id = ? AND day = ? AND status = 'scheduled'",
+                        (clock, post_id, day),
+                    ).rowcount
+                    if updated != 1:
+                        self._connection.rollback()
+                        before = next((str(row["clock"]) for row in rows if int(row["id"]) == post_id), "")
+                        return Resultado(erro=f"O post das {before} acabou de sair.")
+                self._renumber(day)
+                snapshot = [
+                    {"id": int(row["id"]), "clock": str(row["clock"]), "position": int(row["position"])}
+                    for row in rows
+                ]
+                self._put(
+                    "clock_undo",
+                    json.dumps({"day": day, "at": stamp, "posts": snapshot}),
+                )
+                if extend_end:
+                    last = self._connection.execute(
+                        "SELECT MAX(clock) AS last FROM scheduled_posts WHERE day = ? AND status = 'scheduled'",
+                        (day,),
+                    ).fetchone()["last"]
+                    if last:
+                        self._put(f"send_end_extra:{day}", _one_minute_after(str(last)))
+                self._connection.commit()
+                return result
+            except Exception:
+                self._connection.rollback()
+                raise
+
+    def replace_post_books(self, day: str, changes: dict[int, tuple[tuple[BoardBook, ...], list[BoardBook], str]]) -> str:
+        """Troca livros e legenda de vários posts de uma vez. Devolve o erro ou "" se gravou.
+
+        Cada mudança traz os livros que o post tinha quando a troca foi montada. Se o envio
+        mandou o post ou alguém mexeu nele nesse meio tempo, nada é gravado.
+        """
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                for post_id, (expected, books, caption) in changes.items():
+                    row = self._connection.execute(
+                        "SELECT id, day, position, clock, caption, image_path, status FROM scheduled_posts WHERE id = ?",
+                        (post_id,),
+                    ).fetchone()
+                    if row is None or row["day"] != day or row["status"] != "scheduled":
+                        self._connection.rollback()
+                        return "Um desses posts acabou de sair. Nada mudou."
+                    if self._post(row).books != tuple(expected):
+                        self._connection.rollback()
+                        return "O post das {} mudou agora há pouco. Atualize a página.".format(row["clock"])
+                    if not books or len(books) > 3:
+                        self._connection.rollback()
+                        return "Um post leva de 1 a 3 livros."
+                for post_id, (_expected, books, caption) in changes.items():
+                    self._connection.execute("DELETE FROM scheduled_books WHERE post_id = ?", (post_id,))
+                    self._insert_books(post_id, books)
+                    self._connection.execute("UPDATE scheduled_posts SET caption = ? WHERE id = ?", (caption, post_id))
+                    self._connection.execute("DELETE FROM board_checks WHERE post_id = ?", (post_id,))
+                self._connection.commit()
+                return ""
+            except Exception:
+                self._connection.rollback()
+                raise
+
+    def restore_clocks(self, day: str, now_ts: float | None = None) -> str:
+        import json
+        import time
+
+        stamp = time.time() if now_ts is None else now_ts
+        with self._lock, self._connection:
+            raw = self._setting("clock_undo") or ""
+            if not raw:
+                return "Não há horários para desfazer."
+            saved = json.loads(raw)
+            if saved.get("day") != day:
+                return "Não há horários para desfazer."
+            if stamp - float(saved.get("at") or 0) > CLOCK_UNDO_SECONDS:
+                return "O prazo de desfazer acabou."
+            posts = saved.get("posts") or []
+            ids = [int(item["id"]) for item in posts]
+            marks = ",".join("?" for _ in ids)
+            alive = self._connection.execute(
+                f"SELECT COUNT(*) AS total FROM scheduled_posts WHERE status = 'scheduled' AND id IN ({marks})",
+                ids,
+            ).fetchone()["total"] if ids else 0
+            if alive != len(ids):
+                return "Um desses posts já saiu. Os horários ficam como estão."
+            for item in posts:
+                self._connection.execute(
+                    "UPDATE scheduled_posts SET clock = ?, position = ? WHERE id = ? AND status = 'scheduled'",
+                    (item["clock"], int(item["position"]), int(item["id"])),
+                )
+            self._connection.execute("DELETE FROM board_settings WHERE key = 'clock_undo'")
+        return "Os horários voltaram."
+
+    def send_end_for(self, day: str, end: str) -> str:
+        """Fim da janela para o envio. A extensão do dia vale quando a fila passou do horário com confirmação."""
+        extra = self.setting(f"send_end_extra:{day}") or ""
+        return max(end, extra) if extra else end
+
+    def extend_send_end(self, day: str, end: str) -> None:
+        self.put_setting(f"send_end_extra:{day}", end)
+
+    def _renumber(self, day: str) -> None:
+        rows = self._connection.execute(
+            """
+            SELECT id FROM scheduled_posts
+            WHERE day = ? AND status = 'scheduled'
+            ORDER BY clock, position, id
+            """,
+            (day,),
+        ).fetchall()
+        for index, row in enumerate(rows, start=1):
+            self._connection.execute(
+                "UPDATE scheduled_posts SET position = ? WHERE id = ?",
+                (index, int(row["id"])),
+            )
+
+    def _put(self, key: str, value: str) -> None:
+        self._connection.execute(
+            """
+            INSERT INTO board_settings (key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (key, value),
+        )
 
     def fail_if_unsent(self, day: str, post_id: int) -> bool:
         with self._lock, self._connection:
@@ -1045,33 +1277,38 @@ class BoardStore:
         return str(row["image_path"])
 
     def sent_lines(self) -> list[SentLine]:
+        """Histórico completo do que foi enviado."""
         with self._lock:
-            return self._sent_lines()
+            return self._sent_lines("")
 
-    def _sent_lines(self) -> list[SentLine]:
+    def _sent_lines(self, cutoff: str) -> list[SentLine]:
         lines: list[SentLine] = []
         if _table(self._connection, "dispatches"):
+            clause = "AND day >= ?" if cutoff else ""
+            params: tuple = (cutoff,) if cutoff else ()
             rows = self._connection.execute(
-                """
+                f"""
                 SELECT day, title, group_name, COALESCE(sent_at, queued_at) AS when_at
                 FROM dispatches
-                WHERE status = 'enviada'
+                WHERE status = 'enviada' {clause}
                 ORDER BY when_at DESC, id DESC
-                LIMIT 100
-                """
+                """,
+                params,
             ).fetchall()
             lines.extend(
                 SentLine(row["when_at"] or row["day"], row["title"], row["group_name"])
                 for row in rows
             )
+        clause = "AND day >= ?" if cutoff else ""
+        params = (cutoff,) if cutoff else ()
         rows = self._connection.execute(
-            """
+            f"""
             SELECT day, clock, caption
             FROM scheduled_posts
-            WHERE status = 'sent'
+            WHERE status = 'sent' {clause}
             ORDER BY day DESC, clock DESC
-            LIMIT 100
-            """
+            """,
+            params,
         ).fetchall()
         for row in rows:
             title = row["caption"].split("\n", 1)[0].strip("* ")
@@ -1152,6 +1389,12 @@ class BoardStore:
             (day,),
         ).fetchone()
         return int(row["last"]) + 1
+
+
+def _one_minute_after(clock: str) -> str:
+    hour, minute = (int(part) for part in clock.split(":"))
+    total = min(hour * 60 + minute + 1, 23 * 60 + 59)
+    return f"{total // 60:02d}:{total % 60:02d}"
 
 
 def _caption_fields(books: tuple[BoardBook, ...] | list[BoardBook]) -> list[dict]:

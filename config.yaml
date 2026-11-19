@@ -83,6 +83,16 @@ whatsapp:
       id: "120363410393297284@g.us"
     - name: "Black Livros 03"
       id: "120363412365496470@g.us"
+    - name: "Black Livros 04"
+      id: "120363414129484924@g.us"
+    - name: "Black Livros 05"
+      id: "120363429964017395@g.us"
+    - name: "Black Livros 06"
+      id: "120363431256816257@g.us"
+    - name: "Black Livros 07"
+      id: "120363434030882465@g.us"
+    - name: "Black Livros 08"
+      id: "120363432021882701@g.us"
 
 website:
   # Destino da mesma oferta no site. Continua false até o site estar no ar.

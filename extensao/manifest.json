@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "Promo Livros",
+  "version": "1.3.2",
+  "description": "Marca livros na Amazon e no Mercado Livre e monta a fila do dia.",
+  "permissions": ["storage", "sidePanel"],
+  "host_permissions": [
+    "https://painel.promolivros.org/*",
+    "http://127.0.0.1:8787/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Fila do Promo Livros"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.amazon.com.br/*",
+        "https://amazon.com.br/*",
+        "https://www.mercadolivre.com.br/*",
+        "https://lista.mercadolivre.com.br/*",
+        "https://produto.mercadolivre.com.br/*",
+        "https://*.mercadolivre.com.br/*"
+      ],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ]
+}

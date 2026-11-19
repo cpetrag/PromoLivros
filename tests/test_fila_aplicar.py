@@ -68,6 +68,56 @@ class PreviaAplicarTests(unittest.TestCase):
                 catalog.close()
                 board.close()
 
+    def test_shopee_da_fila_aparece_na_previa_e_continua_ao_aplicar(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            catalog = CatalogStore(root / "board.sqlite")
+            board = BoardStore(root / "board.sqlite")
+            try:
+                catalog.replace(parse_csv(_CSV), "amazon")
+                catalog.set_picked("B000000002", True, "2026-10-02")
+                shopee_post = board.add_post(
+                    day="2026-10-02",
+                    clock="16:00",
+                    caption="shopee",
+                    image_path="",
+                    books=[
+                        BoardBook(
+                            title="Dom Casmurro",
+                            blurb="",
+                            price_cents=1500,
+                            list_price_cents=3000,
+                            discount_pct=50,
+                            lowest_label="",
+                            url="https://s.shopee.com.br/abc123",
+                            coupon="",
+                            product_id="123456789.2233445566",
+                        )
+                    ],
+                )
+                board.set_image(shopee_post, f"data/cards/{shopee_post}.jpg")
+                memoria = MemoriaPrevia()
+                payload = previa(catalog, board, "2026-10-02", "15:12", "mine", memoria)
+                self.assertEqual(payload["imagens"], {"123456789.2233445566": f"/cards/{shopee_post}.jpg"})
+                shopee = [slot["shopee"] for slot in payload["slots"] if slot["shopee"]]
+                self.assertEqual([item["id"] for item in shopee], ["123456789.2233445566"])
+                self.assertTrue(all(slot["ml"] is None for slot in payload["slots"] if slot["shopee"]))
+                aplicar(
+                    catalog,
+                    board,
+                    "2026-10-02",
+                    payload["previa_id"],
+                    memoria,
+                    root / "cards",
+                    download=_download,
+                )
+                livros = [book for post in board.posts_for("2026-10-02") for book in post.books]
+                self.assertIn("https://s.shopee.com.br/abc123", [book.url for book in livros])
+                self.assertIn("Cute Bears", [book.title for book in livros])
+            finally:
+                catalog.close()
+                board.close()
+
     def test_aplicar_recusa_quando_a_fila_muda(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

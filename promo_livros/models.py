@@ -108,6 +108,9 @@ class AppConfig:
     website_enabled: bool
     amz_link_api_url: str
     amz_link_api_token: str
+    shopee_app_id: str
+    shopee_secret: str
+    shopee_sub_id: str
 
 
 @dataclass(frozen=True)

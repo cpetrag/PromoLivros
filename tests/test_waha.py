@@ -112,6 +112,31 @@ class WahaClientTests(unittest.TestCase):
         self.assertEqual(http.calls[0][0], "POST")
         self.assertTrue(http.calls[0][1].endswith("/api/sessions/promo-livros/restart"))
 
+    def test_send_poll_posts_the_question_and_options(self) -> None:
+        http = _Http([_Response(201, {"id": "true_1@g.us_POLL"})])
+        client = WahaClient("http://127.0.0.1:4443", "chave", "promo-livros", http=http)
+
+        message_id = client.send_poll("120363430990609445@g.us", "Qual?", ["A", "B"], False)
+
+        self.assertEqual(message_id, "true_1@g.us_POLL")
+        body = http.calls[0][2]
+        assert body is not None
+        self.assertTrue(http.calls[0][1].endswith("/api/sendPoll"))
+        self.assertEqual(body["poll"]["name"], "Qual?")
+        self.assertEqual(body["poll"]["options"], ["A", "B"])
+        self.assertIs(body["poll"]["multipleAnswers"], False)
+        self.assertEqual(body["session"], "promo-livros")
+
+    def test_pin_not_implemented_is_unsupported(self) -> None:
+        http = _Http([_Response(501, {"message": "The method is not implemented by 'GOWS' engine"}, text="not implemented")])
+        client = WahaClient("http://127.0.0.1:4443", "chave", "promo-livros", http=http)
+
+        with self.assertRaises(WahaError) as caught:
+            client.pin_message("120363430990609445@g.us", "true_1@g.us_POLL", 604800)
+
+        self.assertTrue(caught.exception.unsupported)
+        self.assertFalse(caught.exception.session_down)
+
     def test_group_participants_keep_role_and_skip_blanks(self) -> None:
         http = _Http([
             _Response(200, [

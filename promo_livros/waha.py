@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import logging
 from typing import Protocol
+from urllib.parse import quote
 
 import requests
 
@@ -17,9 +18,10 @@ _STATUS_TIMEOUT_SECONDS = 8
 class WahaError(Exception):
     """O WAHA recusou ou não respondeu. A fila decide se tenta de novo."""
 
-    def __init__(self, message: str, *, session_down: bool) -> None:
+    def __init__(self, message: str, *, session_down: bool, unsupported: bool = False) -> None:
         super().__init__(message)
         self.session_down = session_down
+        self.unsupported = unsupported
 
 
 class WhatsAppSender(Protocol):
@@ -192,6 +194,54 @@ class WahaClient:
             )
         return _message_id(payload)
 
+    def send_poll(self, chat_id: str, question: str, options: list[str], multiple: bool) -> str:
+        payload = self._request(
+            "POST",
+            "/api/sendPoll",
+            timeout=_SEND_TIMEOUT_SECONDS,
+            body={
+                "session": self.session,
+                "chatId": chat_id,
+                "poll": {
+                    "name": question,
+                    "options": list(options),
+                    "multipleAnswers": multiple,
+                },
+            },
+        )
+        return _message_id(payload)
+
+    def pin_message(self, chat_id: str, message_id: str, duration: int) -> None:
+        self._request(
+            "POST",
+            _message_path(self.session, chat_id, message_id, "pin"),
+            timeout=_SEND_TIMEOUT_SECONDS,
+            body={"duration": duration},
+        )
+
+    def unpin_message(self, chat_id: str, message_id: str) -> None:
+        self._request(
+            "POST",
+            _message_path(self.session, chat_id, message_id, "unpin"),
+            timeout=_SEND_TIMEOUT_SECONDS,
+            body=None,
+        )
+
+    def lid_links(self) -> dict[str, str]:
+        """Liga @lid e @c.us da mesma pessoa. A chave preferida é o @c.us."""
+        payload = self._request("GET", f"/api/{self.session}/lids", timeout=_STATUS_TIMEOUT_SECONDS)
+        rows = payload if isinstance(payload, list) else []
+        links: dict[str, str] = {}
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            lid = item.get("lid")
+            phone = item.get("pn")
+            if isinstance(lid, str) and isinstance(phone, str) and lid and phone:
+                links[lid] = phone
+                links[phone] = phone
+        return links
+
     def send_jpeg(self, chat_id: str, caption: str, image: bytes) -> str:
         """Manda o card que está no disco. O WAHA não precisa buscar uma URL."""
         payload = self._request(
@@ -234,13 +284,26 @@ class WahaClient:
             raise WahaError("WAHA não respondeu. Confira WAHA_URL.", session_down=True) from exc
 
         if response.status_code >= 400:
-            raise WahaError(_error_message(response), session_down=_session_down(response))
+            text = response.text or ""
+            unsupported = response.status_code == 501 or "not implemented" in text.lower()
+            raise WahaError(
+                _error_message(response),
+                session_down=_session_down(response),
+                unsupported=unsupported,
+            )
         if not response.content:
             return {}
         try:
             return response.json()
         except ValueError:
             return {}
+
+
+def _message_path(session: str, chat_id: str, message_id: str, action: str) -> str:
+    return (
+        f"/api/{quote(session, safe='')}/chats/{quote(chat_id, safe='')}"
+        f"/messages/{quote(message_id, safe='')}/{action}"
+    )
 
 
 def _map_session_status(status: str) -> str:

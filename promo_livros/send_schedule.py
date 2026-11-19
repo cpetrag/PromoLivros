@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-_CLOCK = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+_CLOCK = re.compile(r"^([01][0-9]|2[0-3]):([0-5][0-9])$")
 MAX_SLOTS = 60
 
 
@@ -89,6 +89,14 @@ def plan_span_clocks(start: str, end: str, count: int) -> list[str]:
 def _format_clock(minute: int) -> str:
     hour, mins = divmod(minute, 60)
     return f"{hour:02d}:{mins:02d}"
+
+
+def clock_minutes(value: str, label: str = "Horário") -> int:
+    return _clock_minutes(value, label)
+
+
+def format_clock(minute: int) -> str:
+    return _format_clock(minute)
 
 
 def slot_clocks(schedule: SendSchedule) -> list[str]:

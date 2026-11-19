@@ -30,6 +30,8 @@ class ItemFila:
     discount: int = 0
     category: str = ""
     reserva: bool = False
+    # Só serve para abrir a loja na curadoria; o mesmo livro com outro link continua igual.
+    url: str = field(default="", compare=False)
 
 
 @dataclass(frozen=True)
@@ -39,6 +41,11 @@ class SlotFila:
     ml: ItemFila | None
     amazon_avisos: tuple[str, ...] = ()
     ml_avisos: tuple[str, ...] = ()
+    shopee: ItemFila | None = None
+    shopee_avisos: tuple[str, ...] = ()
+    # Segunda oferta da mesma loja. Fica vazio quando o post tem uma oferta, ou duas de lojas diferentes.
+    extra: ItemFila | None = None
+    extra_avisos: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -65,23 +72,37 @@ class OpcoesFila:
     ordem: str = "mine"
     obras_enviadas: tuple[tuple[str, str], ...] = ()
     horarios: tuple[str, ...] | None = None
+    # Ordem que a pessoa arrumou na grade da curadoria: ids da Amazon e da segunda loja.
+    ordem_manual: tuple[tuple[str, ...], tuple[str, ...]] | None = None
 
 
-def montar_fila(amazon: list[ItemFila], mercado: list[ItemFila], opcoes: OpcoesFila) -> FilaMontada:
-    """Uma fila para o que ainda cabe hoje. Enviado na janela não entra. Sobra não some: volta em `sobras`."""
+def montar_fila(
+    amazon: list[ItemFila],
+    mercado: list[ItemFila],
+    opcoes: OpcoesFila,
+    shopee: list[ItemFila] | None = None,
+) -> FilaMontada:
+    """Uma fila para o que ainda cabe hoje. Enviado na janela não entra. Sobra não some: volta em `sobras`.
+
+    O post leva no máximo duas lojas, então Shopee divide a segunda metade com o Mercado Livre.
+    """
     clocks = list(opcoes.horarios) if opcoes.horarios is not None else horarios_livres(
         opcoes.inicio, opcoes.fim, opcoes.intervalo, opcoes.agora
     )
     az_ok, az_block = _separar(amazon, opcoes.enviados)
-    ml_ok, ml_block = _separar(mercado, opcoes.enviados)
+    ml_ok, ml_block = _separar([*mercado, *(shopee or [])], opcoes.enviados)
     az = _preparar(az_ok, opcoes.ordem)
     ml = _preparar(ml_ok, opcoes.ordem)
+    if opcoes.ordem_manual is not None:
+        az = com_ordem_manual(az, opcoes.ordem_manual[0])
+        ml = com_ordem_manual(ml, opcoes.ordem_manual[1])
     usados = min(len(clocks), max(len(az), len(ml)))
     slots = tuple(
         SlotFila(
             clocks[index],
             az[index] if index < len(az) else None,
-            ml[index] if index < len(ml) else None,
+            _da_loja(ml, index, "ml"),
+            shopee=_da_loja(ml, index, "shopee"),
         )
         for index in range(usados)
     )
@@ -162,14 +183,17 @@ def item_de_livro(book) -> ItemFila:
     if price and listed and listed > price:
         discount = round((listed - price) * 100 / listed)
     state = getattr(book, "pick_state", "") or ""
+    raw_store = getattr(book, "store", "amazon") or "amazon"
+    store = raw_store if raw_store in {"amazon", "ml", "shopee"} else "amazon"
     return ItemFila(
         id=str(book.asin),
         title=str(book.title),
-        store="ml" if getattr(book, "store", "amazon") == "ml" else "amazon",
+        store=store,
         price_cents=price,
         discount=int(getattr(book, "discount", discount) or discount),
         category=str(getattr(book, "category", "") or ""),
         reserva=state == "reserva",
+        url=str(getattr(book, "url", "") or ""),
     )
 
 
@@ -199,6 +223,20 @@ def _separar(items: list[ItemFila], enviados: dict[str, tuple[str, ...]]) -> tup
         elif item.price_cents:
             livres.append(item)
     return livres, bloqueados
+
+
+def _da_loja(items: list[ItemFila], index: int, loja: str) -> ItemFila | None:
+    if index >= len(items) or items[index].store != loja:
+        return None
+    return items[index]
+
+
+def com_ordem_manual(items: list[ItemFila], ids: tuple[str, ...]) -> list[ItemFila]:
+    """Quem está na lista segue a lista. Marcado depois da arrumação entra no fim, na ordem de antes."""
+    place = {item_id.upper(): index for index, item_id in enumerate(ids)}
+    listed = sorted((item for item in items if item.id.upper() in place), key=lambda item: place[item.id.upper()])
+    rest = [item for item in items if item.id.upper() not in place]
+    return [*listed, *rest]
 
 
 def _preparar(items: list[ItemFila], ordem: str) -> list[ItemFila]:
@@ -253,6 +291,10 @@ def _avisos(slots: tuple[SlotFila, ...], obras_enviadas: tuple[tuple[str, str], 
             placed.append((index, "amazon", slot.amazon))
         if slot.ml is not None:
             placed.append((index, "ml", slot.ml))
+        if slot.shopee is not None:
+            placed.append((index, "shopee", slot.shopee))
+        if slot.extra is not None:
+            placed.append((index, "extra", slot.extra))
     notes: dict[tuple[int, str], list[str]] = {}
     for index, store, item in placed:
         found: list[str] = []
@@ -296,6 +338,10 @@ def _avisos(slots: tuple[SlotFila, ...], obras_enviadas: tuple[tuple[str, str], 
                 slot.ml,
                 tuple(notes.get((index, "amazon"), ())),
                 tuple(notes.get((index, "ml"), ())),
+                slot.shopee,
+                tuple(notes.get((index, "shopee"), ())),
+                slot.extra,
+                tuple(notes.get((index, "extra"), ())),
             )
         )
     return tuple(marked)

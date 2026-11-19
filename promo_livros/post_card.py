@@ -42,6 +42,53 @@ def render_card(covers: list[Image.Image], destination: Path, *, logo_path: Path
     canvas.convert("RGB").save(destination, "JPEG", quality=68, optimize=True)
 
 
+def extract_covers(card: Path, count: int) -> list[Image.Image] | None:
+    """Recorta as capas de um card já feito por `render_card`.
+
+    A Shopee não guarda a foto do anúncio; o card é a única cópia da capa. As capas ficam
+    lado a lado sobre o bege, com 24 px entre elas, acima da faixa da logo. Se o recorte
+    não achar exatamente `count` capas, devolve None e quem chamou busca as capas de outro jeito.
+    """
+    from PIL import ImageChops
+
+    if count < 1 or not card.is_file():
+        return None
+    margin, band, gap = 28, 78, 24
+    with Image.open(card) as source:
+        image = source.convert("RGB")
+    top, bottom = margin, image.height - band - margin
+    if bottom - top < 40:
+        return None
+    area = image.crop((0, top, image.width, bottom))
+    # Diferença para o bege; o JPEG deixa ruído, por isso o limiar.
+    diff = ImageChops.difference(area, Image.new("RGB", area.size, _BEIGE[:3])).convert("L")
+    mask = diff.point(lambda value: 255 if value > 24 else 0)
+    columns = mask.resize((mask.width, 1), Image.Resampling.BOX)
+    filled = [columns.getpixel((x, 0)) > 6 for x in range(columns.width)]
+    runs: list[list[int]] = []
+    for x, on in enumerate(filled):
+        if not on:
+            continue
+        if runs and x - runs[-1][1] < gap // 2:
+            runs[-1][1] = x
+        else:
+            runs.append([x, x])
+    runs = [run for run in runs if run[1] - run[0] >= 20]
+    if len(runs) != count:
+        return None
+    covers = []
+    for left, right in runs:
+        strip = mask.crop((left, 0, right + 1, mask.height))
+        profile = strip.resize((1, strip.height), Image.Resampling.BOX)
+        rows = [profile.getpixel((0, y)) > 6 for y in range(profile.height)]
+        first = next((y for y, on in enumerate(rows) if on), None)
+        last = next((y for y in range(len(rows) - 1, -1, -1) if rows[y]), None)
+        if first is None or last is None or last - first < 20:
+            return None
+        covers.append(image.crop((left, top + first, right + 1, top + last + 1)))
+    return covers
+
+
 def _logo(path: Path, max_side: int) -> Image.Image:
     source = Image.open(path).convert("RGBA")
     stamped = Image.new("RGBA", source.size)

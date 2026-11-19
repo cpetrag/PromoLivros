@@ -58,6 +58,40 @@ class BoardSendTests(unittest.TestCase):
             self.assertEqual(len(sender.sent), 2)
             store.close()
 
+    def test_end_extended_for_the_day_lets_a_late_post_go(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            store = _store(root)
+            sender = _Sender()
+            store.add_post(
+                day="2026-09-28",
+                clock="22:10",
+                caption="*Tarde*",
+                image_path="data/cards/1.jpg",
+                books=[_book()],
+            )
+            late = datetime(2026, 9, 28, 22, 10, tzinfo=ZONE)
+            store.cancel_day("2026-09-27")
+            for post in store.posts_for("2026-09-28")[:2]:
+                store.mark_sent(post.id)
+            self.assertEqual(_publish(root, store, sender, late), "idle")
+            store.extend_send_end("2026-09-28", "22:11")
+            self.assertEqual(_publish(root, store, sender, late), "sent")
+            self.assertEqual(store.send_end_for("2026-09-29", "22:00"), "22:00")
+            store.close()
+
+    def test_a_recent_poll_holds_the_next_post(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            store = _store(root)
+            sender = _Sender()
+            now = datetime(2026, 9, 28, 10, 0, tzinfo=ZONE)
+            quiet = (now - timedelta(seconds=10)).isoformat(timespec="seconds")
+
+            self.assertEqual(_publish(root, store, sender, now, quiet_since=quiet), "waiting")
+            self.assertEqual(sender.sent, [])
+            store.close()
+
     def test_flag_off_future_clock_and_after_the_window_do_not_send(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -135,9 +169,15 @@ class BoardSendTests(unittest.TestCase):
             store.close()
 
 
-def _publish(root: Path, store: BoardStore, sender: _Sender, now: datetime) -> str:
+def _publish(
+    root: Path,
+    store: BoardStore,
+    sender: _Sender,
+    now: datetime,
+    quiet_since: str | None = None,
+) -> str:
     config = SimpleNamespace(whatsapp_groups=GROUPS)
-    return publish_due(config, store, sender, root=root, now=now)
+    return publish_due(config, store, sender, root=root, now=now, quiet_since=quiet_since)
 
 
 def _store(root: Path, *, image: bool = True) -> BoardStore:

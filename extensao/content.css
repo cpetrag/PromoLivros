@@ -1,0 +1,79 @@
+#promo-livros-caixa {
+  position: fixed;
+  z-index: 2147483646;
+  right: 16px;
+  bottom: 16px;
+  border: 0;
+  border-radius: 999px;
+  padding: 12px 16px;
+  background: #1b1f24;
+  color: #fff;
+  font: 600 14px/1.2 Inter, "Segoe UI", sans-serif;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+
+#promo-livros-caixa:disabled,
+.promo-livros-card:disabled {
+  opacity: 0.7;
+  cursor: progress;
+}
+
+#promo-livros-tray {
+  position: fixed;
+  z-index: 2147483646;
+  right: 16px;
+  bottom: 16px;
+  width: min(360px, calc(100vw - 32px));
+  max-height: min(70vh, 560px);
+  overflow: auto;
+  padding: 12px;
+  border-radius: 16px;
+  background: #fff;
+  color: #1b1f24;
+  font: 14px/1.35 "Segoe UI", sans-serif;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.22);
+}
+
+.promo-tray-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.promo-tray-head button,
+.promo-tray-apply {
+  border: 0;
+  border-radius: 999px;
+  padding: 8px 12px;
+  background: #1b1f24;
+  color: #fff;
+  cursor: pointer;
+}
+
+.promo-tray-line {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 8px 0;
+}
+
+.promo-tray-line span:first-child {
+  width: 52px;
+  flex: none;
+  font-weight: 700;
+}
+
+.promo-tray-line img {
+  width: 36px;
+  height: 48px;
+  object-fit: cover;
+  border-radius: 4px;
+  background: #eee;
+}
+
+.promo-tray-apply {
+  width: 100%;
+  margin-top: 8px;
+}

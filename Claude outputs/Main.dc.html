@@ -1,0 +1,910 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Gestor Natura — Painel</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#F4F2EC}
+a{color:#0B6B5A}a:hover{color:#07493D}
+button{font-family:inherit;cursor:pointer}
+input,textarea,select{font-family:inherit;font-size:14px;color:#1D1C1A;background:#FFFFFF;border:1px solid #CFCABE;border-radius:8px;padding:9px 11px;box-sizing:border-box;width:100%}
+input:focus,textarea:focus,select:focus{outline:2px solid #0B6B5A;outline-offset:1px;border-color:#0B6B5A}
+button:focus-visible,a:focus-visible{outline:2px solid #0B6B5A;outline-offset:2px}
+</style>
+</helmet>
+<div style="min-height: 100vh; font-family: 'IBM Plex Sans', system-ui, sans-serif; color: #1D1C1A; background: #F4F2EC; display: flex; flex-wrap: wrap; align-items: stretch">
+
+<nav aria-label="Menu principal" style="flex: 1 1 220px; max-width: 260px; background: #1D1C1A; color: #F4F2EC; padding: 24px 16px; box-sizing: border-box; display: flex; flex-direction: column; gap: 24px">
+<div style="display: flex; flex-direction: column; gap: 4px; padding: 0 8px">
+<div style="font-size: 18px; font-weight: 700; letter-spacing: -0.01em">Gestor Natura</div>
+<div style="font-size: 12px; color: #B9B4A8; font-family: 'IBM Plex Mono', monospace">postador de promoções</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<sc-for list="{{nav}}" as="n" hint-placeholder-count="7">
+<button type="button" onClick="{{n.go}}" style="{{n.style}}">
+<span>{{n.label}}</span>
+<span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #B9B4A8">{{n.count}}</span>
+</button>
+</sc-for>
+</div>
+<div style="margin-top: auto; display: flex; flex-direction: column; gap: 10px; padding: 14px 12px; border: 1px solid #3A3833; border-radius: 10px">
+<div style="font-size: 12px; color: #B9B4A8">WhatsApp</div>
+<sc-if value="{{waUp}}" hint-placeholder-val="{{ true }}">
+<div style="display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600"><span style="width: 9px; height: 9px; border-radius: 50%; background: #4CC38A"></span>Conectado</div>
+</sc-if>
+<sc-if value="{{waDown}}" hint-placeholder-val="{{ false }}">
+<div style="display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; color: #FFB4A9"><span style="width: 9px; height: 9px; border-radius: 50%; background: #F0614F"></span>Desconectado</div>
+</sc-if>
+<div style="font-size: 12px; color: #B9B4A8; font-family: 'IBM Plex Mono', monospace">waha-natura · :4444 · GOWS</div>
+</div>
+</nav>
+
+<main style="flex: 999 1 640px; min-width: 0; display: flex; flex-direction: column">
+
+<header style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 32px; border-bottom: 1px solid #E2DED4; background: #FBFAF6">
+<div style="display: flex; flex-direction: column; gap: 2px">
+<h1 style="margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -0.01em">{{title}}</h1>
+<div style="font-size: 13px; color: #5F5B53">Sábado, 04/10/2026 · agora <span style="font-family: 'IBM Plex Mono', monospace">10:12</span> · dados de exemplo</div>
+</div>
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px">
+<div style="display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: #E3F0EC; border-radius: 8px; font-size: 13px">
+<span style="color: #0B4F43">Cupom ativo</span>
+<strong style="font-family: 'IBM Plex Mono', monospace; color: #0B4F43">PECHINCHA15 · 15%</strong>
+</div>
+<button type="button" onClick="{{logout}}" style="padding: 9px 14px; background: transparent; border: 1px solid #CFCABE; border-radius: 8px; font-size: 13px; color: #1D1C1A">Sair</button>
+</div>
+</header>
+
+<sc-if value="{{waDown}}" hint-placeholder-val="{{ false }}">
+<div role="alert" style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; margin: 20px 32px 0; padding: 20px 24px; background: #A1251B; color: #FFFFFF; border-radius: 12px">
+<div style="display: flex; align-items: center; gap: 16px">
+<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12" y2="17"></line></svg>
+<div style="display: flex; flex-direction: column; gap: 4px">
+<strong style="font-size: 18px">WhatsApp desconectado desde 09:20 — fila pausada</strong>
+<span style="font-size: 14px; color: #FFE3DF">Os horários perdidos ficam como “não enviado” e podem ser reagendados. Ao reconectar, o envio segue do próximo horário.</span>
+</div>
+</div>
+<button type="button" onClick="{{goWhatsApp}}" style="padding: 12px 18px; background: #FFFFFF; color: #A1251B; border: 0; border-radius: 8px; font-size: 14px; font-weight: 700">Reconectar (QR)</button>
+</div>
+</sc-if>
+
+<div style="padding: 24px 32px 48px; display: flex; flex-direction: column; gap: 24px">
+
+<sc-if value="{{isFila}}" hint-placeholder-val="{{ true }}">
+<div style="display: flex; flex-direction: column; gap: 24px">
+
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px">
+<sc-for list="{{stats}}" as="s" hint-placeholder-count="5">
+<div style="background: #FFFFFF; border: 1px solid #E2DED4; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 6px">
+<span style="font-size: 12px; color: #5F5B53">{{s.label}}</span>
+<span style="{{s.style}}">{{s.value}}</span>
+</div>
+</sc-for>
+</div>
+
+<div style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center">
+<button type="button" onClick="{{openImport}}" style="display: inline-flex; align-items: center; gap: 8px; padding: 11px 16px; background: #0B6B5A; color: #FFFFFF; border: 0; border-radius: 8px; font-size: 14px; font-weight: 600">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+Importar CSV</button>
+<button type="button" style="padding: 11px 16px; background: #FFFFFF; border: 1px solid #CFCABE; border-radius: 8px; font-size: 14px; color: #1D1C1A">Inserir promoção fixa</button>
+<button type="button" onClick="{{openEspelho}}" style="padding: 11px 16px; background: #FFFFFF; border: 1px solid #CFCABE; border-radius: 8px; font-size: 14px; color: #1D1C1A">Redistribuir por intervalo</button>
+<span style="margin-left: auto; font-size: 13px; color: #5F5B53">Janela 08:00–22:00 · intervalo 30 min · delay entre grupos 20–60 s · a fila zera às 00:00</span>
+</div>
+
+<div style="display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start">
+
+<section aria-label="Fila do dia" style="flex: 999 1 560px; min-width: 0; background: #FFFFFF; border: 1px solid #E2DED4; border-radius: 12px; overflow: hidden">
+<div style="overflow-x: auto">
+<div style="min-width: 820px">
+<div style="display: grid; grid-template-columns: 64px 52px minmax(0, 1fr) 150px 140px 150px; gap: 12px; padding: 12px 16px; font-size: 12px; color: #5F5B53; border-bottom: 1px solid #E2DED4; background: #FBFAF6">
+<span>Horário</span><span></span><span>Item</span><span>Preço</span><span>Status</span><span>Ações</span>
+</div>
+<sc-for list="{{items}}" as="it" hint-placeholder-count="10">
+<div style="{{it.rowStyle}}">
+<button type="button" onClick="{{it.select}}" aria-label="Ver prévia" style="font-family: 'IBM Plex Mono', monospace; font-size: 15px; font-weight: 600; background: transparent; border: 0; padding: 0; text-align: left; color: #1D1C1A">{{it.time}}</button>
+<div style="{{it.thumbStyle}}">{{it.thumb}}</div>
+<button type="button" onClick="{{it.select}}" style="display: flex; flex-direction: column; gap: 3px; background: transparent; border: 0; padding: 0; text-align: left; min-width: 0; color: #1D1C1A">
+<span style="font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%">{{it.name}}</span>
+<span style="font-size: 12px; color: #5F5B53">{{it.sub}}</span>
+</button>
+<div style="display: flex; flex-direction: column; gap: 2px; font-size: 13px">
+<span style="color: #5F5B53; text-decoration: line-through">{{it.de}}</span>
+<span>{{it.por}}</span>
+<strong style="color: #0B4F43">{{it.final}}</strong>
+</div>
+<div style="display: flex; flex-direction: column; gap: 4px; align-items: flex-start">
+<span style="{{it.chipStyle}}">{{it.statusLabel}}</span>
+<span style="font-size: 11px; color: #5F5B53">{{it.statusNote}}</span>
+</div>
+<div style="display: flex; flex-wrap: wrap; gap: 6px; align-items: center">
+<button type="button" onClick="{{it.toggleMention}}" aria-pressed="{{it.mention}}" style="{{it.mentionStyle}}">@todos</button>
+<sc-if value="{{it.canMove}}" hint-placeholder-val="{{ true }}">
+<button type="button" onClick="{{it.up}}" aria-label="Subir" style="width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; background: #FFFFFF; border: 1px solid #CFCABE; border-radius: 6px; color: #1D1C1A"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="18 15 12 9 6 15"></polyline></svg></button>
+<button type="button" onClick="{{it.down}}" aria-label="Descer" style="width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; background: #FFFFFF; border: 1px solid #CFCABE; border-radius: 6px; color: #1D1C1A"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg></button>
+</sc-if>
+<sc-if value="{{it.isCombo}}" hint-placeholder-val="{{ false }}">
+<button type="button" style="padding: 6px 10px; background: #FFFFFF; border: 1px solid #CFCABE; border-radius: 6px; font-size: 12px; font-weight: 600; color: #1D1C1A">Separar</button>
+</sc-if>
+<sc-if value="{{it.canReschedule}}" hint-placeholder-val="{{ false }}">
+<button type="button" onClick="{{it.reschedule}}" style="padding: 6px 10px; background: #FBF0D9; border: 1px solid #E3C27A; border-radius: 6px; font-size: 12px; font-weight: 600; color: #6B4600">Reagendar</button>
+</sc-if>
+<sc-if value="{{it.canRetry}}" hint-placeholder-val="{{ false }}">
+<button type="button" onClick="{{it.reschedule}}" style="padding: 6px 10px; background: #FBE4E1; border: 1px solid #E8A59C; border-radius: 6px; font-size: 12px; font-weight: 600; color: #8A1F16">Tentar de novo</button>
+</sc-if>
+</div>
+</div>
+</sc-for>
+</div>
+</div>
+</section>
+
+<aside aria-label="Prévia do post" style="flex: 1 1 340px; max-width: 420px; display: flex; flex-direction: column; gap: 14px">
+<div style="background: #FFFFFF; border: 1px solid #E2DED4; border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 14px">
+<div style="display: flex; justify-content: space-between; align-items: center; gap: 8px">
+<strong style="font-size: 15px">Prévia do post</strong>
+<span style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #5F5B53">{{sel.time}} · {{sel.typeLabel}}</span>
+</div>
+<div style="background: #E7DFD3; border-radius: 10px; padding: 14px">
+<div style="background: #FFFFFF; border-radius: 8px; padding: 6px; display: flex; flex-direction: column; gap: 8px; box-shadow: 0 1px 1px rgba(0,0,0,0.08)">
+<sc-if value="{{sel.isSingle}}" hint-placeholder-val="{{ true }}">
+<div style="{{sel.imgStyle}}">
+<span style="font-size: 12px; font-family: 'IBM Plex Mono', monospace; opacity: 0.85">{{sel.imgLabel}}</span>
+<strong style="font-size: 20px; line-height: 1.2">{{sel.imgTitle}}</strong>
+</div>
+</sc-if>
+<sc-if value="{{sel.isCombo}}" hint-placeholder-val="{{ false }}">
+<div style="display: flex; flex-direction: column; gap: 4px">
+<div style="height: 220px; border-radius: 6px; overflow: hidden; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px; background: #FFFFFF">
+<sc-for list="{{sel.parts}}" as="pt" hint-placeholder-count="2">
+<div style="{{pt.tile}}">
+<span style="font-size: 11px; font-family: 'IBM Plex Mono', monospace; opacity: 0.85">{{pt.brand}}</span>
+<strong style="font-size: 15px; line-height: 1.2">{{pt.line}}</strong>
+<span style="align-self: flex-start; margin-top: 6px; padding: 4px 8px; background: #FFFFFF; color: #1D1C1A; border-radius: 6px; font-size: 13px; font-weight: 700; font-family: 'IBM Plex Mono', monospace">{{pt.final}}</span>
+</div>
+</sc-for>
+</div>
+<span style="font-size: 11px; color: #5F5B53; font-family: 'IBM Plex Mono', monospace">montagem gerada · 2 fotos + preço com cupom</span>
+</div>
+</sc-if>
+<div style="white-space: pre-line; font-size: 14px; line-height: 1.45; padding: 2px 6px 4px; color: #1D1C1A">{{sel.caption}}</div>
+<div style="align-self: flex-end; font-size: 11px; color: #5F5B53; padding: 0 6px 4px">{{sel.time}}</div>
+</div>
+</div>
+<sc-if value="{{sel.isCombo}}" hint-placeholder-val="{{ false }}">
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 6px">
+<span style="font-size: 12px; font-weight: 600">Texto do post casado</span>
+<sc-for list="{{textModes}}" as="tm" hint-placeholder-count="2">
+<button type="button" onClick="{{tm.pick}}" aria-pressed="{{tm.on}}" style="{{tm.style}}">{{tm.label}}</button>
+</sc-for>
+</div>
+</sc-if>
+<div style="font-size: 12px; color: #5F5B53">{{sel.mentionNote}}</div>
+<div style="display: flex; flex-wrap: wrap; gap: 8px">
+<button type="button" style="padding: 9px 12px; background: #FFFFFF; border: 1px solid #CFCABE; border-radius: 8px; font-size: 13px; color: #1D1C1A">Regerar texto (IA)</button>
+<button type="button" style="padding: 9px 12px; background: #FFFFFF; border: 1px solid #CFCABE; border-radius: 8px; font-size: 13px; color: #1D1C1A">Editar</button>
+<sc-if value="{{sel.isFixa}}" hint-placeholder-val="{{ false }}">
+<button type="button" style="padding: 9px 12px; background: #FFFFFF; border: 1px solid #CFCABE; border-radius: 8px; font-size: 13px; color: #1D1C1A">Trocar arte</button>
+</sc-if>
+<button type="button" style="padding: 9px 12px; background: #FFFFFF; border: 1px solid #CFCABE; border-radius: 8px; font-size: 13px; color: #1D1C1A">Pular</button>
+</div>
+</div>
+<div style="background: #FFFFFF; border: 1px solid #E2DED4; border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 8px; font-size: 13px">
+<strong style="font-size: 14px">Disparos deste item</strong>
+<sc-for list="{{sel.dispatches}}" as="d" hint-placeholder-count="3">
+<div style="display: flex; justify-content: space-between; gap: 8px">
+<span>{{d.group}}</span>
+<span style="{{d.style}}">{{d.state}}</span>
+</div>
+</sc-for>
+</div>
+</aside>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{isFixas}}" hint-placeholder-val="{{ false }}">
+<div style="display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start">
+<section aria-label="Promoções cadastradas" style="flex: 1 1 280px; max-width: 340px; display: flex; flex-direction: column; gap: 10px">
+<button type="button" style="padding: 11px 16px; background: #0B6B5A; color: #FFFFFF; border: 0; border-radius: 8px; font-size: 14px; font-weight: 600">Nova promoção fixa</button>
+<sc-for list="{{promos}}" as="p" hint-placeholder-count="3">
+<button type="button" onClick="{{p.select}}" style="{{p.style}}">
+<span style="font-size: 15px; font-weight: 600">{{p.name}}</span>
+<span style="font-size: 12px; color: #5F5B53">{{p.meta}}</span>
+<span style="{{p.chipStyle}}">{{p.status}}</span>
+</button>
+</sc-for>
+</section>
+
+<section aria-label="Editar promoção" style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 20px">
+<div style="background: #FFFFFF; border: 1px solid #E2DED4; border-radius: 12px; padding: 20px; display: flex; flex-direction: column; gap: 14px">
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px">
+<label style="display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 600">Nome da promoção<input type="text" value="{{promo.name}}"></label>
+<label style="display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 600">Link da campanha<input type="text" value="minhaloja.natura.com/c/promocao-da-semana?consultoria=pechincheiro"></label>
+</div>
+<label style="display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 600">Informações para a IA
+<textarea rows="3">{{promo.brief}}</textarea>
+</label>
+<div style="font-size: 12px; color: #5F5B53">Ao entrar na fila (pelo CSV ou pelo painel), o sistema sorteia uma das artes abaixo e gera um texto novo com a IA.</div>
+</div>
+
+<div style="background: #FFFFFF; border: 1px solid #E2DED4; border-radius: 12px; padding: 20px; display: flex; flex-direction: column; gap: 14px">
+<div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px">
+<strong style="font-size: 15px">Artes ({{promo.artCount}})</strong>
+<div style="display: flex; gap: 8px">
+<button type="button" style="padding: 9px 12px; background: #FFFFFF; border: 1px solid #CFCABE; border-radius: 8px; font-size: 13px; color: #1D1C1A">Enviar arte pronta</button>
+<button type="button" style="padding: 9px 12px; background: #E3F0EC; border: 1px solid #A9CFC4; border-radius: 8px; font-size: 13px; font-weight: 600; color: #0B4F43">Criar por template</button>
+</div>
+</div>
+<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 12px">
+<sc-for list="{{promo.arts}}" as="a" hint-placeholder-count="3">
+<div style="display: flex; flex-direction: column; gap: 6px">
+<div style="{{a.style}}">{{a.title}}</div>
+<span style="font-size: 12px; color: #5F5B53">{{a.origin}}</span>
+</div>
+</sc-for>
+</div>
+</div>
+
+<div style="background: #FFFFFF; border: 1px solid #E2DED4; border-radius: 12px; padding: 20px; display: flex; flex-wrap: wrap; gap: 24px">
+<div style="flex: 1 1 260px; display: flex; flex-direction: column; gap: 14px">
+<strong style="font-size: 15px">Nova arte por template</strong>
+<div style="display: flex; flex-direction: column; gap: 6px">
+<span style="font-size: 13px; font-weight: 600">Layout</span>
+<div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px">
+<sc-for list="{{layouts}}" as="l" hint-placeholder-count="4">
+<button type="button" onClick="{{l.pick}}" aria-pressed="{{l.on}}" style="{{l.style}}">{{l.label}}</button>
+</sc-for>
+</div>
+</div>
+<label style="display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 600">Título<input type="text" value="{{artTitle}}" onInput="{{setTitle}}"></label>
+<label style="display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 600">Subtítulo<input type="text" value="{{artSub}}" onInput="{{setSub}}"></label>
+<label style="display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 600">Desconto em destaque<input type="text" value="{{artPct}}" onInput="{{setPct}}"></label>
+<div style="display: flex; flex-direction: column; gap: 6px">
+<span style="font-size: 13px; font-weight: 600">Cor</span>
+<div style="display: flex; gap: 8px">
+<sc-for list="{{swatches}}" as="w" hint-placeholder-count="4">
+<button type="button" onClick="{{w.pick}}" aria-label="{{w.name}}" style="{{w.style}}"></button>
+</sc-for>
+</div>
+</div>
+<button type="button" style="padding: 11px 16px; background: #0B6B5A; color: #FFFFFF; border: 0; border-radius: 8px; font-size: 14px; font-weight: 600">Salvar arte (PNG)</button>
+</div>
+<div style="flex: 1 1 300px; display: flex; flex-direction: column; gap: 8px; align-items: center">
+<span style="font-size: 12px; color: #5F5B53; align-self: flex-start">Preview 1080×1080</span>
+<sc-if value="{{lyFaixa}}" hint-placeholder-val="{{ true }}">
+<div style="width: 320px; height: 320px; border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; background: #F4EDE2">
+<div style="flex: 1; display: flex; align-items: center; justify-content: center; font-size: 12px; color: #8A8377; font-family: 'IBM Plex Mono', monospace">[imagem de fundo]</div>
+<div style="{{artBand}}">
+<span style="font-size: 54px; font-weight: 700; line-height: 1">{{artPct}}</span>
+<div style="display: flex; flex-direction: column; gap: 4px; min-width: 0">
+<strong style="font-size: 18px; line-height: 1.15">{{artTitle}}</strong>
+<span style="font-size: 13px">{{artSub}}</span>
+<span style="font-size: 11px; font-family: 'IBM Plex Mono', monospace; opacity: 0.9">CUPOM PECHINCHA15</span>
+</div>
+</div>
+</div>
+</sc-if>
+<sc-if value="{{lyCentro}}" hint-placeholder-val="{{ false }}">
+<div style="{{artCenter}}">
+<span style="font-size: 12px; font-family: 'IBM Plex Mono', monospace; letter-spacing: 0.12em">PROMOÇÃO</span>
+<span style="font-size: 88px; font-weight: 700; line-height: 1">{{artPct}}</span>
+<strong style="font-size: 22px; line-height: 1.15">{{artTitle}}</strong>
+<span style="font-size: 14px">{{artSub}}</span>
+<span style="margin-top: 8px; padding: 6px 12px; border: 1.5px solid currentColor; border-radius: 999px; font-size: 12px; font-family: 'IBM Plex Mono', monospace">CUPOM PECHINCHA15</span>
+</div>
+</sc-if>
+<sc-if value="{{lyDividido}}" hint-placeholder-val="{{ false }}">
+<div style="width: 320px; height: 320px; border-radius: 10px; overflow: hidden; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr))">
+<div style="{{artSplit}}">
+<span style="font-size: 60px; font-weight: 700; line-height: 1">{{artPct}}</span>
+<strong style="font-size: 17px; line-height: 1.15">{{artTitle}}</strong>
+<span style="font-size: 12px">{{artSub}}</span>
+</div>
+<div style="background: #F4EDE2; display: flex; align-items: center; justify-content: center; font-size: 12px; color: #8A8377; font-family: 'IBM Plex Mono', monospace; text-align: center; padding: 8px">[imagem de produto]</div>
+</div>
+</sc-if>
+<sc-if value="{{lySelo}}" hint-placeholder-val="{{ false }}">
+<div style="width: 320px; height: 320px; border-radius: 10px; overflow: hidden; background: #F4EDE2; position: relative; display: flex; align-items: flex-end">
+<div style="position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 12px; color: #8A8377; font-family: 'IBM Plex Mono', monospace">[imagem de fundo]</div>
+<div style="{{artSeal}}"><span style="font-size: 40px; font-weight: 700; line-height: 1">{{artPct}}</span><span style="font-size: 11px">OFF</span></div>
+<div style="position: relative; width: 100%; background: rgba(29,28,26,0.82); color: #FFFFFF; padding: 14px 16px; display: flex; flex-direction: column; gap: 3px">
+<strong style="font-size: 18px">{{artTitle}}</strong>
+<span style="font-size: 13px">{{artSub}} · CUPOM PECHINCHA15</span>
+</div>
+</div>
+</sc-if>
+</div>
+</div>
+</section>
+</div>
+</sc-if>
+
+<sc-if value="{{isSigs}}" hint-placeholder-val="{{ false }}">
+<div style="max-width: 860px; display: flex; flex-direction: column; gap: 16px">
+<p style="margin: 0; font-size: 14px; color: #5F5B53">Linha final de cada post. Cada post leva uma assinatura ativa, em rodízio.</p>
+<div style="background: #FFFFFF; border: 1px solid #E2DED4; border-radius: 12px; overflow: hidden">
+<sc-for list="{{sigs}}" as="g" hint-placeholder-count="4">
+<div style="display: grid; grid-template-columns: 36px minmax(0, 1fr) auto auto; gap: 14px; align-items: center; padding: 14px 18px; border-bottom: 1px solid #EFECE4">
+<span style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #5F5B53">{{g.n}}</span>
+<span style="font-size: 14px">{{g.text}}</span>
+<span style="{{g.nextStyle}}">{{g.next}}</span>
+<button type="button" onClick="{{g.toggle}}" aria-pressed="{{g.on}}" style="{{g.toggleStyle}}">{{g.toggleLabel}}</button>
+</div>
+</sc-for>
+</div>
+<div style="display: flex; gap: 10px">
+<input type="text" placeholder="Nova assinatura…" aria-label="Nova assinatura">
+<button type="button" style="flex: none; padding: 9px 16px; background: #0B6B5A; color: #FFFFFF; border: 0; border-radius: 8px; font-size: 14px; font-weight: 600">Adicionar</button>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{isConfig}}" hint-placeholder-val="{{ false }}">
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 20px; align-items: start">
+<section style="background: #FFFFFF; border: 1px solid #E2DED4; border-radius: 12px; padding: 20px; display: flex; flex-direction: column; gap: 14px">
+<h2 style="margin: 0; font-size: 16px">Cupom global</h2>
+<div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px">
+<label style="display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 600">Código<input type="text" value="PECHINCHA15"></label>
+<label style="display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 600">Desconto (%)<input type="text" value="15"></label>
+</div>
+<div style="font-size: 13px; color: #5F5B53; background: #F4F2EC; border-radius: 8px; padding: 10px 12px; font-family: 'IBM Plex Mono', monospace">final = preço_por × (1 − 15%) · ex.: R$ 80,00 → R$ 68,00</div>
+<div style="font-size: 12px; color: #5F5B53">Salvar recalcula os itens pendentes da fila.</div>
+</section>
+<section style="background: #FFFFFF; border: 1px solid #E2DED4; border-radius: 12px; padding: 20px; display: flex; flex-direction: column; gap: 14px">
+<h2 style="margin: 0; font-size: 16px">Link de afiliado</h2>
+<label style="display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 600">Consultoria<input type="text" value="pechincheiro"></label>
+<div style="font-size: 12px; color: #5F5B53; word-break: break-all; font-family: 'IBM Plex Mono', monospace">minhaloja.natura.com/c/promocao-da-semana?<strong style="color: #0B4F43">consultoria=pechincheiro</strong>&amp;marca=natura</div>
+</section>
+<section style="background: #FFFFFF; border: 1px solid #E2DED4; border-radius: 12px; padding: 20px; display: flex; flex-direction: column; gap: 14px">
+<h2 style="margin: 0; font-size: 16px">Janela e envio</h2>
+<div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px">
+<label style="display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 600">Início<input type="text" value="08:00"></label>
+<label style="display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 600">Fim<input type="text" value="22:00"></label>
+<label style="display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 600">Intervalo<input type="text" value="30 min"></label>
+<label style="display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 600">Delay mín.<input type="text" value="20 s"></label>
+<label style="display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 600">Delay máx.<input type="text" value="60 s"></label>
+<label style="display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 600">Tolerância<input type="text" value="10 min"></label>
+</div>
+<div style="font-size: 12px; color: #5F5B53">Cabem 29 posts nessa janela. Horário vencido há menos que a tolerância ainda sai.</div>
+</section>
+<section style="background: #FFFFFF; border: 1px solid #E2DED4; border-radius: 12px; padding: 20px; display: flex; flex-direction: column; gap: 14px">
+<h2 style="margin: 0; font-size: 16px">IA</h2>
+<div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px">
+<label style="display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 600">Modelo<select><option>gpt-4.1-mini</option><option>gpt-4.1</option></select></label>
+<label style="display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 600">Máx. caracteres<input type="text" value="160"></label>
+</div>
+<div style="font-size: 12px; color: #5F5B53">Se a IA falhar, o post sai sem a chamada e o erro vai para o log.</div>
+</section>
+<section style="grid-column: 1 / -1; background: #FFFFFF; border: 1px solid #E2DED4; border-radius: 12px; padding: 20px; display: flex; flex-direction: column; gap: 16px">
+<div style="display: flex; flex-direction: column; gap: 4px">
+<h2 style="margin: 0; font-size: 16px">Posts com vários produtos (casados)</h2>
+<span style="font-size: 13px; color: #5F5B53">Opcional. Na extensão, “Casar com o próximo” junta produtos no mesmo post; na fila dá para juntar, separar e trocar.</span>
+</div>
+<div style="display: flex; flex-wrap: wrap; gap: 28px">
+<div style="display: flex; flex-direction: column; gap: 8px">
+<span style="font-size: 13px; font-weight: 600">Máximo de produtos por post</span>
+<div style="display: flex; gap: 6px">
+<sc-for list="{{maxOpts}}" as="mo" hint-placeholder-count="4">
+<button type="button" onClick="{{mo.pick}}" aria-pressed="{{mo.on}}" style="{{mo.style}}">{{mo.label}}</button>
+</sc-for>
+</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<span style="font-size: 13px; font-weight: 600">Regra de marcas</span>
+<div style="display: flex; flex-wrap: wrap; gap: 6px">
+<sc-for list="{{brandRules}}" as="br" hint-placeholder-count="3">
+<button type="button" onClick="{{br.pick}}" aria-pressed="{{br.on}}" style="{{br.style}}">{{br.label}}</button>
+</sc-for>
+</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<span style="font-size: 13px; font-weight: 600">Texto da IA</span>
+<div style="display: flex; flex-wrap: wrap; gap: 6px">
+<sc-for list="{{textModes}}" as="tm" hint-placeholder-count="2">
+<button type="button" onClick="{{tm.pick}}" aria-pressed="{{tm.on}}" style="{{tm.style}}">{{tm.label}}</button>
+</sc-for>
+</div>
+</div>
+</div>
+<div style="font-size: 12px; color: #5F5B53">Imagem: montagem gerada com as fotos lado a lado e o preço com cupom de cada produto (1 mensagem por grupo).</div>
+</section>
+<section style="grid-column: 1 / -1; background: #FFFFFF; border: 1px solid #E2DED4; border-radius: 12px; padding: 20px; display: flex; flex-wrap: wrap; gap: 20px">
+<div style="flex: 2 1 380px; display: flex; flex-direction: column; gap: 10px">
+<h2 style="margin: 0; font-size: 16px">Template da mensagem (produto)</h2>
+<textarea rows="9" style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; line-height: 1.5">{{templateText}}</textarea>
+</div>
+<div style="flex: 1 1 240px; display: flex; flex-direction: column; gap: 10px">
+<span style="font-size: 13px; font-weight: 600">Variáveis</span>
+<div style="display: flex; flex-wrap: wrap; gap: 6px">
+<sc-for list="{{vars}}" as="v" hint-placeholder-count="12">
+<code style="padding: 4px 8px; background: #F4F2EC; border: 1px solid #E2DED4; border-radius: 6px; font-size: 12px; font-family: 'IBM Plex Mono', monospace">{{v}}</code>
+</sc-for>
+</div>
+</div>
+</section>
+</div>
+</sc-if>
+
+<sc-if value="{{isWhats}}" hint-placeholder-val="{{ false }}">
+<div style="display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start">
+<section style="flex: 1 1 320px; max-width: 420px; background: #FFFFFF; border: 1px solid #E2DED4; border-radius: 12px; padding: 20px; display: flex; flex-direction: column; gap: 14px">
+<h2 style="margin: 0; font-size: 16px">Sessão</h2>
+<sc-if value="{{waUp}}" hint-placeholder-val="{{ true }}">
+<div style="display: flex; flex-direction: column; gap: 12px">
+<div style="display: flex; align-items: center; gap: 10px; font-size: 18px; font-weight: 700; color: #1E6B3A"><span style="width: 12px; height: 12px; border-radius: 50%; background: #2E9A5A"></span>Conectado</div>
+<div style="font-size: 13px; line-height: 1.7; font-family: 'IBM Plex Mono', monospace; color: #3F3C36">número +55 34 [NÚMERO]<br>sessão natura<br>container waha-natura · 127.0.0.1:4444<br>engine GOWS</div>
+<button type="button" onClick="{{toggleWa}}" style="align-self: flex-start; padding: 9px 12px; background: #FFFFFF; border: 1px solid #CFCABE; border-radius: 8px; font-size: 13px; color: #1D1C1A">Simular desconexão</button>
+</div>
+</sc-if>
+<sc-if value="{{waDown}}" hint-placeholder-val="{{ false }}">
+<div style="display: flex; flex-direction: column; gap: 12px">
+<div style="display: flex; align-items: center; gap: 10px; font-size: 18px; font-weight: 700; color: #A1251B"><span style="width: 12px; height: 12px; border-radius: 50%; background: #D93A2B"></span>Desconectado</div>
+<div style="width: 220px; height: 220px; border: 2px dashed #CFCABE; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 13px; color: #5F5B53; font-family: 'IBM Plex Mono', monospace; text-align: center">[QR code do WAHA]</div>
+<div style="font-size: 13px; color: #5F5B53">WhatsApp › Aparelhos conectados › Conectar aparelho</div>
+<div style="display: flex; gap: 8px">
+<button type="button" style="padding: 9px 12px; background: #FFFFFF; border: 1px solid #CFCABE; border-radius: 8px; font-size: 13px; color: #1D1C1A">Gerar novo QR</button>
+<button type="button" onClick="{{toggleWa}}" style="padding: 9px 12px; background: #0B6B5A; color: #FFFFFF; border: 0; border-radius: 8px; font-size: 13px; font-weight: 600">Simular reconexão</button>
+</div>
+</div>
+</sc-if>
+</section>
+<section style="flex: 999 1 420px; min-width: 0; background: #FFFFFF; border: 1px solid #E2DED4; border-radius: 12px; padding: 20px; display: flex; flex-direction: column; gap: 12px">
+<div style="display: flex; justify-content: space-between; align-items: center; gap: 10px">
+<h2 style="margin: 0; font-size: 16px">Grupos que recebem os posts</h2>
+<button type="button" style="padding: 8px 12px; background: #FFFFFF; border: 1px solid #CFCABE; border-radius: 8px; font-size: 13px; color: #1D1C1A">Atualizar lista</button>
+</div>
+<sc-for list="{{groups}}" as="gr" hint-placeholder-count="5">
+<label style="display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 12px 14px; border: 1px solid #E2DED4; border-radius: 8px; font-size: 14px">
+<input type="checkbox" checked="{{gr.on}}" onChange="{{gr.toggle}}" style="width: 18px; height: 18px; accent-color: #0B6B5A">
+<span style="display: flex; flex-direction: column; gap: 2px; min-width: 0"><strong>{{gr.name}}</strong><span style="font-size: 12px; color: #5F5B53; font-family: 'IBM Plex Mono', monospace">{{gr.jid}}</span></span>
+<span style="font-size: 12px; color: #5F5B53">{{gr.members}}</span>
+</label>
+</sc-for>
+<div style="font-size: 12px; color: #5F5B53">Todos os grupos marcados recebem todos os posts, com delay aleatório entre um e outro.</div>
+</section>
+</div>
+</sc-if>
+
+<sc-if value="{{isSent}}" hint-placeholder-val="{{ false }}">
+<div style="background: #FFFFFF; border: 1px solid #E2DED4; border-radius: 12px; overflow: hidden">
+<div style="overflow-x: auto">
+<div style="min-width: 760px">
+<div style="display: grid; grid-template-columns: 70px minmax(0, 1fr) 110px 90px 130px; gap: 12px; padding: 12px 18px; font-size: 12px; color: #5F5B53; background: #FBFAF6; border-bottom: 1px solid #E2DED4">
+<span>Horário</span><span>Item</span><span>Grupos</span><span>Menção</span><span>Resultado</span>
+</div>
+<sc-for list="{{sent}}" as="e" hint-placeholder-count="5">
+<div style="display: grid; grid-template-columns: 70px minmax(0, 1fr) 110px 90px 130px; gap: 12px; padding: 13px 18px; font-size: 14px; border-bottom: 1px solid #EFECE4; align-items: center">
+<span style="font-family: 'IBM Plex Mono', monospace; font-weight: 600">{{e.time}}</span>
+<span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{e.name}}</span>
+<span style="font-family: 'IBM Plex Mono', monospace">{{e.groups}}</span>
+<span>{{e.mention}}</span>
+<span style="{{e.style}}">{{e.result}}</span>
+</div>
+</sc-for>
+</div>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{isLogs}}" hint-placeholder-val="{{ false }}">
+<div style="display: flex; flex-direction: column; gap: 14px">
+<div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center">
+<sc-for list="{{logFilters}}" as="f" hint-placeholder-count="4">
+<button type="button" onClick="{{f.pick}}" aria-pressed="{{f.on}}" style="{{f.style}}">{{f.label}}</button>
+</sc-for>
+<span style="margin-left: auto; font-size: 12px; color: #5F5B53">Logs e imagens de produto com mais de 7 dias são apagados automaticamente.</span>
+</div>
+<div style="background: #1D1C1A; color: #E9E6DE; border-radius: 12px; padding: 14px 0; font-family: 'IBM Plex Mono', monospace; font-size: 13px; overflow-x: auto">
+<sc-for list="{{logs}}" as="lg" hint-placeholder-count="8">
+<div style="display: grid; grid-template-columns: 150px 64px 140px minmax(280px, 1fr); gap: 12px; padding: 6px 18px; min-width: 700px">
+<span style="color: #9C978C">{{lg.at}}</span>
+<span style="{{lg.style}}">{{lg.level}}</span>
+<span style="color: #C9C4B8">{{lg.event}}</span>
+<span>{{lg.msg}}</span>
+</div>
+</sc-for>
+</div>
+</div>
+</sc-if>
+
+</div>
+</main>
+
+<sc-if value="{{importOpen}}" hint-placeholder-val="{{ false }}">
+<div style="position: fixed; inset: 0; background: rgba(29,28,26,0.55); display: flex; align-items: flex-start; justify-content: center; padding: 40px 16px; overflow-y: auto; z-index: 10">
+<div role="dialog" aria-modal="true" aria-label="Importar CSV" style="width: 100%; max-width: 760px; background: #FFFFFF; border-radius: 14px; padding: 24px; display: flex; flex-direction: column; gap: 18px; font-family: 'IBM Plex Sans', system-ui, sans-serif">
+<div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 12px">
+<div style="display: flex; flex-direction: column; gap: 4px">
+<h2 style="margin: 0; font-size: 20px">{{modalTitle}}</h2>
+<span style="font-size: 13px; color: #5F5B53; font-family: 'IBM Plex Mono', monospace">fila-natura-2026-10-04.csv · gerado pela extensão</span>
+</div>
+<button type="button" onClick="{{closeImport}}" aria-label="Fechar" style="width: 36px; height: 36px; display: inline-flex; align-items: center; justify-content: center; background: #F4F2EC; border: 0; border-radius: 8px; color: #1D1C1A"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><line x1="6" y1="6" x2="18" y2="18"></line><line x1="18" y1="6" x2="6" y2="18"></line></svg></button>
+</div>
+
+<sc-if value="{{showSteps}}" hint-placeholder-val="{{ true }}">
+<div style="display: flex; flex-direction: column; gap: 16px">
+<div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px">
+<div style="background: #F4F2EC; border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 2px"><span style="font-size: 12px; color: #5F5B53">Linhas lidas</span><strong style="font-size: 22px; font-family: 'IBM Plex Mono', monospace">36</strong></div>
+<div style="background: #F4F2EC; border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 2px"><span style="font-size: 12px; color: #5F5B53">Produtos</span><strong style="font-size: 22px; font-family: 'IBM Plex Mono', monospace">32</strong></div>
+<div style="background: #F4F2EC; border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 2px"><span style="font-size: 12px; color: #5F5B53">Fixas</span><strong style="font-size: 22px; font-family: 'IBM Plex Mono', monospace">2</strong></div>
+<div style="background: #FBE4E1; border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 2px"><span style="font-size: 12px; color: #8A1F16">Com erro</span><strong style="font-size: 22px; font-family: 'IBM Plex Mono', monospace; color: #8A1F16">2</strong></div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: #8A1F16; background: #FDF3F1; border: 1px solid #F2C9C3; border-radius: 10px; padding: 12px 14px">
+<span>Linha 17 — preco_por vazio</span>
+<span>Linha 23 — url fora de minhaloja.natura.com</span>
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<sc-for list="{{steps}}" as="st" hint-placeholder-count="5">
+<div style="display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 10px; align-items: center; font-size: 14px">
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1E6B3A" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"></polyline></svg>
+<span>{{st.label}}</span>
+<span style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #5F5B53">{{st.value}}</span>
+</div>
+</sc-for>
+</div>
+<div style="display: flex; flex-direction: column; gap: 12px; background: #FBF0D9; border: 1px solid #E3C27A; border-radius: 10px; padding: 14px 16px">
+<strong style="font-size: 15px; color: #6B4600">6 itens passam do fim da janela (22:00)</strong>
+<span style="font-size: 13px; color: #6B4600">O CSV começa às 10:30 com intervalo de 25 min. Na janela cabem 28 dos 34 itens.</span>
+<div style="display: flex; flex-wrap: wrap; gap: 8px">
+<button type="button" onClick="{{openEspelho}}" style="padding: 10px 14px; background: #6B4600; color: #FFFFFF; border: 0; border-radius: 8px; font-size: 14px; font-weight: 600">Ajustar intervalo (ver espelho)</button>
+<button type="button" style="padding: 10px 14px; background: #FFFFFF; border: 1px solid #E3C27A; border-radius: 8px; font-size: 14px; color: #6B4600">Descartar os 6 excedentes</button>
+</div>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{espelho}}" hint-placeholder-val="{{ false }}">
+<div style="display: flex; flex-direction: column; gap: 14px">
+<div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center">
+<span style="font-size: 14px; font-weight: 600">Intervalo</span>
+<sc-for list="{{ivs}}" as="iv" hint-placeholder-count="4">
+<button type="button" onClick="{{iv.pick}}" aria-pressed="{{iv.on}}" style="{{iv.style}}">{{iv.label}}</button>
+</sc-for>
+</div>
+<div style="{{fitStyle}}">{{fitText}}</div>
+<div style="border: 1px solid #E2DED4; border-radius: 10px; overflow: hidden">
+<div style="display: grid; grid-template-columns: 40px minmax(0, 1fr) 80px 80px; gap: 10px; padding: 10px 14px; font-size: 12px; color: #5F5B53; background: #FBFAF6; border-bottom: 1px solid #E2DED4">
+<span>#</span><span>Item</span><span>Antes</span><span>Depois</span>
+</div>
+<sc-for list="{{mirror}}" as="m" hint-placeholder-count="12">
+<div style="{{m.style}}">
+<span style="font-family: 'IBM Plex Mono', monospace; color: #5F5B53">{{m.n}}</span>
+<span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{m.name}}</span>
+<span style="font-family: 'IBM Plex Mono', monospace; color: #5F5B53">{{m.before}}</span>
+<span style="{{m.afterStyle}}">{{m.after}}</span>
+</div>
+</sc-for>
+</div>
+</div>
+</sc-if>
+
+<div style="display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; border-top: 1px solid #E2DED4; padding-top: 16px">
+<button type="button" onClick="{{closeImport}}" style="padding: 11px 16px; background: #FFFFFF; border: 1px solid #CFCABE; border-radius: 8px; font-size: 14px; color: #1D1C1A">Cancelar</button>
+<button type="button" onClick="{{closeImport}}" style="padding: 11px 16px; background: #0B6B5A; color: #FFFFFF; border: 0; border-radius: 8px; font-size: 14px; font-weight: 600">{{applyLabel}}</button>
+</div>
+</div>
+</div>
+</sc-if>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"whatsappDown":{"editor":"boolean","default":false,"section":"Simulação"},"startScreen":{"editor":"enum","options":["fila","fixas","assinaturas","config","whatsapp","enviados","logs"],"default":"fila","section":"Simulação"},"$preview":{"width":1440,"height":1180}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = {
+      screen: null, waDown: null, sel: 6, mentions: { 3: true }, done: {},
+      order: [1,2,3,4,5,6,7,8,9,10],
+      importOpen: false, espelho: false, iv: 20,
+      promoSel: 0, layout: 'faixa', artTitle: 'Leve 3, ganhe 30%', artSub: '+ 15% com o cupom', artPct: '30%', artColor: '#0B6B5A',
+      sigsOn: { 0: true, 1: true, 2: true, 3: false },
+      groupsOn: { 0: true, 1: true, 2: true, 3: false },
+      logFilter: 'todos'
+    };
+  }
+
+  data() {
+    return {
+      1: { type: 'produto', name: 'Kaiak Clássico Desodorante Colônia Masculino 100 ml', brand: 'Natura', line: 'Kaiak', de: 'R$ 189,90', por: 'R$ 142,40', final: 'R$ 121,04', econ: '36%', status: 'enviado', bg: '#2F5D7C', th: 'KA', chamada: 'Frescor aquático que virou assinatura de muita gente — e hoje está bem mais em conta.' },
+      2: { type: 'produto', name: 'Ekos Polpa Hidratante para o Corpo Castanha 400 ml', brand: 'Natura', line: 'Ekos', de: 'R$ 99,90', por: 'R$ 59,90', final: 'R$ 50,92', econ: '49%', status: 'enviado', bg: '#7A4B2A', th: 'EK', chamada: 'Hidratação densa de castanha para pele seca, daquelas que duram o dia inteiro.' },
+      3: { type: 'fixa', name: 'Leve 3, ganhe 30% + cupom', art: 'arte 2 de 3', status: 'enviado', chamada: 'Monte seu kit: levando 3 produtos você já ganha 30% de desconto, e o cupom soma mais 15% no carrinho.' },
+      4: { type: 'produto', name: 'Essencial Exclusivo Deo Parfum Masculino 100 ml', brand: 'Natura', line: 'Essencial', de: 'R$ 259,90', por: 'R$ 194,90', final: 'R$ 165,67', econ: '36%', status: 'nao_enviado', bg: '#3B3A36', th: 'ES', chamada: 'Amadeirado marcante para quem gosta de perfume que chega antes.' },
+      5: { type: 'produto', name: 'Tododia Creme Nutritivo Corporal Ameixa e Flor de Baunilha 400 ml', brand: 'Natura', line: 'Tododia', de: 'R$ 74,90', por: 'R$ 44,90', final: 'R$ 38,17', econ: '49%', status: 'falhou', bg: '#7B3F6B', th: 'TD', chamada: 'Aquele cheirinho de ameixa com baunilha que fica na pele até o fim do dia.' },
+      6: { type: 'produto', name: 'Una Base Fluida HD FPS 15 30 ml', brand: 'Natura', line: 'Una', de: 'R$ 119,90', por: 'R$ 83,90', final: 'R$ 71,32', econ: '41%', status: 'pendente', bg: '#9C6B4E', th: 'UN', chamada: 'Cobertura leve com acabamento natural, boa para o dia a dia sem pesar.' },
+      7: { type: 'combo', name: 'Humor Próprio + Avon Far Away', status: 'pendente', chamada: 'Dupla perfumada do dia: um floral leve da Natura e um clássico da Avon, os dois com preço de ocasião.',
+           parts: [
+             { name: 'Humor Próprio Desodorante Colônia Feminino 75 ml', brand: 'Natura', line: 'Humor', de: 'R$ 149,90', por: 'R$ 104,90', final: 'R$ 89,17', econ: '41%', bg: '#B5523B', chamada: 'Floral divertido e leve, ótimo para presentear (ou se presentear).' },
+             { name: 'Avon Far Away Deo Colônia 50 ml', brand: 'Avon', line: 'Far Away', de: 'R$ 129,90', por: 'R$ 64,90', final: 'R$ 55,17', econ: '58%', bg: '#6B3E75', chamada: 'Oriental adocicado que é sucesso há anos, pela metade do preço.' }
+           ] },
+      8: { type: 'fixa', name: 'Semana Ekos', art: 'arte 1 de 2', status: 'pendente', chamada: 'Semana Ekos no ar: a linha toda com desconto e o cupom ainda tira mais 15%.' },
+      9: { type: 'produto', name: 'Chronos Sérum Antissinais 30 ml', brand: 'Natura', line: 'Chronos', de: 'R$ 179,90', por: 'R$ 125,90', final: 'R$ 107,02', econ: '41%', status: 'pendente', bg: '#4F6B5E', th: 'CH', chamada: 'Sérum de textura leve que entra fácil na rotina de cuidados.' },
+      10: { type: 'produto', name: 'Ekos Sabonete em Barra Maracujá 5 un.', brand: 'Natura', line: 'Ekos', de: 'R$ 49,90', por: 'R$ 34,90', final: 'R$ 29,67', econ: '41%', status: 'pendente', bg: '#C08A1E', th: 'EK', chamada: 'Kit de sabonetes de maracujá com espuma cremosa e perfume que relaxa.' }
+    };
+  }
+
+  renderVals() {
+    const st = this.state;
+    const D = this.data();
+    const screen = st.screen ?? (this.props.startScreen ?? 'fila');
+    const waDown = st.waDown ?? (this.props.whatsappDown ?? false);
+    const go = (s) => () => this.setState({ screen: s });
+    const sigs = [
+      'Entre no grupo e chame as amigas: [LINK DO GRUPO]',
+      'Preços podem mudar a qualquer momento — garanta o seu.',
+      'Cupom válido enquanto durar a campanha da Natura.',
+      'Siga o canal para não perder nenhuma oferta: [LINK DO CANAL]'
+    ];
+    const activeSigs = sigs.map((t, i) => ({ t, i })).filter((x) => st.sigsOn[x.i]);
+    const times = ['08:00','08:30','09:00','09:30','10:00','10:30','11:00','11:30','12:00','12:30'];
+    const statusOf = (id) => st.done[id] ? 'pendente' : D[id].status;
+
+    const navDef = [
+      ['fila', 'Fila do dia', '10'], ['fixas', 'Promoções fixas', '3'], ['assinaturas', 'Assinaturas', '4'],
+      ['config', 'Configurações', ''], ['whatsapp', 'WhatsApp', waDown ? '!' : ''], ['enviados', 'Enviados', '3'], ['logs', 'Logs', '7d']
+    ];
+    const nav = navDef.map(([k, label, count]) => ({
+      label, count, go: go(k),
+      style: 'display: flex; justify-content: space-between; align-items: center; width: 100%; padding: 11px 12px; border: 0; border-radius: 8px; font-size: 14px; text-align: left; ' + (screen === k ? 'background: #F4F2EC; color: #1D1C1A; font-weight: 600;' : 'background: transparent; color: #E9E6DE;')
+    }));
+    const titles = { fila: 'Fila do dia', fixas: 'Promoções fixas', assinaturas: 'Assinaturas', config: 'Configurações', whatsapp: 'WhatsApp', enviados: 'Enviados', logs: 'Logs do sistema' };
+
+    const chip = (bg, fg) => 'display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; background: ' + bg + '; color: ' + fg;
+    const statusMeta = {
+      enviado: ['Enviado', chip('#E2F2E6', '#1E6B3A'), '3 de 3 grupos'],
+      nao_enviado: ['Não enviado', chip('#FBF0D9', '#6B4600'), 'WhatsApp caiu às 09:20'],
+      falhou: ['Falhou', chip('#FBE4E1', '#8A1F16'), 'falhou em 1 de 3 grupos'],
+      pendente: ['Pendente', chip('#F0EEE8', '#3F3C36'), ''],
+      proximo: ['Próximo', chip('#0B6B5A', '#FFFFFF'), 'sai às 10:30']
+    };
+
+    const order = st.order;
+    let nextMarked = false;
+    const move = (idx, dir) => () => {
+      const j = idx + dir;
+      if (j < 0 || j >= order.length) return;
+      if (statusOf(order[j]) !== 'pendente') return;
+      const o = order.slice(); const t = o[idx]; o[idx] = o[j]; o[j] = t;
+      this.setState({ order: o });
+    };
+    const items = order.map((id, idx) => {
+      const d = D[id];
+      let s = statusOf(id);
+      if (s === 'pendente' && !nextMarked && !waDown) { s = 'proximo'; nextMarked = true; }
+      const meta = statusMeta[s];
+      const isFixa = d.type === 'fixa';
+      const isCombo = d.type === 'combo';
+      const mention = !!st.mentions[id];
+      const selected = st.sel === id;
+      return {
+        time: times[idx], name: d.name, isCombo,
+        sub: isFixa ? 'Promoção fixa · ' + d.art + ' (sorteada)' : (isCombo ? 'Post casado · 2 produtos · ' + d.parts.map((p) => p.brand).join(' + ') : d.brand + ' · ' + d.line),
+        de: isFixa ? '' : (isCombo ? d.parts.map((p) => p.de).join(' · ') : d.de),
+        por: isFixa ? 'cupom PECHINCHA15' : (isCombo ? 'por ' + d.parts.map((p) => p.por).join(' · ') : 'por ' + d.por),
+        final: isFixa ? '' : (isCombo ? 'c/ cupom ' + d.parts.map((p) => p.final).join(' · ') : 'c/ cupom ' + d.final),
+        thumb: isFixa ? 'FIXA' : (isCombo ? '2×' : d.th),
+        thumbStyle: 'width: 44px; height: 44px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: ' + (isFixa ? '10' : '13') + 'px; font-weight: 700; font-family: IBM Plex Mono, monospace; color: #FFFFFF; background: ' + (isFixa ? '#0B6B5A' : (isCombo ? 'linear-gradient(90deg, ' + d.parts[0].bg + ' 50%, ' + d.parts[1].bg + ' 50%)' : d.bg)),
+        statusLabel: meta[0], chipStyle: meta[1], statusNote: meta[2],
+        mention: mention ? 'true' : 'false',
+        mentionStyle: 'padding: 6px 9px; border-radius: 6px; font-size: 12px; font-weight: 600; font-family: IBM Plex Mono, monospace; ' + (mention ? 'background: #0B6B5A; color: #FFFFFF; border: 1px solid #0B6B5A' : 'background: #FFFFFF; color: #5F5B53; border: 1px dashed #B5AFA2'),
+        toggleMention: () => this.setState({ mentions: Object.assign({}, st.mentions, { [id]: !mention }) }),
+        canMove: s === 'pendente' || s === 'proximo',
+        canReschedule: s === 'nao_enviado', canRetry: s === 'falhou',
+        reschedule: () => this.setState({ done: Object.assign({}, st.done, { [id]: true }) }),
+        up: move(idx, -1), down: move(idx, 1),
+        select: () => this.setState({ sel: id }),
+        rowStyle: 'display: grid; grid-template-columns: 64px 52px minmax(0, 1fr) 150px 140px 150px; gap: 12px; align-items: center; padding: 12px 16px; border-bottom: 1px solid #EFECE4; ' + (selected ? 'background: #EEF6F3; box-shadow: inset 3px 0 0 #0B6B5A;' : 'background: #FFFFFF;')
+      };
+    });
+
+    const selIdx = Math.max(0, order.indexOf(st.sel));
+    const sd = D[st.sel];
+    const selFixa = sd.type === 'fixa';
+    const sig = activeSigs.length ? activeSigs[selIdx % activeSigs.length].t : '';
+    const selCombo = sd.type === 'combo';
+    const textMode = st.textMode || 'por_produto';
+    const plink = (p) => 'minhaloja.natura.com/p/[produto]?consultoria=pechincheiro&marca=' + p.brand.toLowerCase();
+    let caption;
+    if (selFixa) {
+      caption = sd.chamada + '\n\nCupom *PECHINCHA15*: mais 15% no carrinho.\n\nminhaloja.natura.com/c/promocao-da-semana?consultoria=pechincheiro\n\n' + sig;
+    } else if (selCombo && textMode === 'por_produto') {
+      caption = sd.parts.map((p) => p.chamada + '\n*' + p.name + '*\nDe ~' + p.de + '~ por ' + p.por + '\nc/ cupom: *' + p.final + '* (' + p.econ + ' de economia)\n' + plink(p)).join('\n\n') + '\n\nUse o cupom *PECHINCHA15* nos dois.\n\n' + sig;
+    } else if (selCombo) {
+      caption = sd.chamada + '\n\n' + sd.parts.map((p) => '*' + p.name + '*\nDe ~' + p.de + '~ por ' + p.por + ' → *' + p.final + '* c/ cupom\n' + plink(p)).join('\n\n') + '\n\nCupom *PECHINCHA15*\n\n' + sig;
+    } else {
+      caption = sd.chamada + '\n\n*' + sd.name + '*\nDe ~' + sd.de + '~ por ' + sd.por + '\nCom o cupom *PECHINCHA15*: *' + sd.final + '* (' + sd.econ + ' de economia)\n\nminhaloja.natura.com/p/[produto]?consultoria=pechincheiro\n\n' + sig;
+    }
+    const textModes = [['por_produto', '1 chamada por produto'], ['geral', '1 chamada geral']].map(([k, label]) => ({
+      label, on: textMode === k ? 'true' : 'false', pick: () => this.setState({ textMode: k }),
+      style: 'padding: 6px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; ' + (textMode === k ? 'background: #0B6B5A; color: #FFFFFF; border: 1px solid #0B6B5A' : 'background: #FFFFFF; color: #1D1C1A; border: 1px solid #CFCABE')
+    }));
+    const sStatus = statusOf(st.sel);
+    const groupNames = ['Clube Beauty Promos 01', 'Clube Beauty Promos 02', 'Garimpo de Amigas'];
+    const dispatches = groupNames.map((g, i) => {
+      let state = 'agendado', style = 'color: #5F5B53';
+      if (sStatus === 'enviado') { state = 'enviado ' + times[selIdx].slice(0, 3) + String(i * 34 % 60).padStart(2, '0'); style = 'color: #1E6B3A; font-weight: 600'; }
+      if (sStatus === 'falhou') { state = i === 1 ? 'falhou (timeout)' : 'enviado'; style = i === 1 ? 'color: #8A1F16; font-weight: 600' : 'color: #1E6B3A; font-weight: 600'; }
+      if (sStatus === 'nao_enviado') { state = 'não enviado'; style = 'color: #6B4600; font-weight: 600'; }
+      if (sStatus === 'pendente' && i > 0) state = 'agendado + ' + (20 + i * 17) + ' s';
+      return { group: g, state, style };
+    });
+    const sel = {
+      time: times[selIdx], typeLabel: selFixa ? 'promoção fixa' : (selCombo ? 'post casado (2)' : 'produto'), isFixa: selFixa, caption,
+      isCombo: selCombo, isSingle: !selCombo,
+      parts: selCombo ? sd.parts.map((p) => ({ brand: p.brand, line: p.line, final: p.final,
+        tile: 'display: flex; flex-direction: column; justify-content: flex-end; gap: 3px; padding: 12px; color: #FFFFFF; background: ' + p.bg })) : [],
+      imgLabel: selFixa ? 'arte sorteada · ' + sd.art : 'foto do produto (baixada no HD)',
+      imgTitle: selFixa ? sd.name : (sd.line || ''),
+      imgStyle: 'height: 220px; border-radius: 6px; display: flex; flex-direction: column; justify-content: flex-end; gap: 4px; padding: 16px; color: #FFFFFF; box-sizing: border-box; background: ' + (selFixa ? '#0B6B5A' : (sd.bg || '#0B6B5A')),
+      mentionNote: st.mentions[st.sel] ? 'Mencionar todos: ligado — menção oculta nos 3 grupos.' : 'Mencionar todos: desligado (ligue no botão @todos da linha).',
+      dispatches
+    };
+
+    const stats = [
+      { label: 'Na fila hoje', value: '10', style: 'font-size: 26px; font-weight: 700; font-family: IBM Plex Mono, monospace' },
+      { label: 'Enviados', value: '3', style: 'font-size: 26px; font-weight: 700; font-family: IBM Plex Mono, monospace; color: #1E6B3A' },
+      { label: 'Não enviados', value: st.done[4] ? '0' : '1', style: 'font-size: 26px; font-weight: 700; font-family: IBM Plex Mono, monospace; color: #6B4600' },
+      { label: 'Falhas', value: st.done[5] ? '0' : '1', style: 'font-size: 26px; font-weight: 700; font-family: IBM Plex Mono, monospace; color: #8A1F16' },
+      { label: 'Próximo envio', value: waDown ? 'pausado' : '10:30', style: 'font-size: 26px; font-weight: 700; font-family: IBM Plex Mono, monospace; color: #0B4F43' }
+    ];
+
+    // import + espelho
+    const toMin = (t) => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
+    const fmt = (m) => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
+    const start = toMin('10:30'), end = toMin('22:00'), total = 34;
+    const slots = (iv) => Math.floor((end - start) / iv) + 1;
+    const fits = Math.min(total, slots(st.iv));
+    const excess = total - fits;
+    const names = ['Kaiak Clássico Colônia 100 ml', 'Ekos Polpa Castanha 400 ml', 'Leve 3, ganhe 30% (fixa)', 'Essencial Exclusivo 100 ml', 'Tododia Ameixa 400 ml', 'Una Base Fluida HD', 'Humor Próprio 75 ml', 'Chronos Sérum 30 ml'];
+    const rowIdx = [0, 1, 2, 3, 4, 5, -1, 27, 28, 29, 30, 31, 32, 33];
+    const mirror = rowIdx.map((i) => {
+      if (i < 0) return { n: '…', name: '', before: '', after: '', style: 'display: grid; grid-template-columns: 40px minmax(0, 1fr) 80px 80px; gap: 10px; padding: 6px 14px; font-size: 13px; color: #5F5B53', afterStyle: '' };
+      const b = start + i * 25, a = start + i * st.iv;
+      const out = a > end;
+      return {
+        n: String(i + 1), name: i < names.length ? names[i] : (i === 31 ? 'Semana Ekos (fixa)' : 'Produto ' + (i + 1)),
+        before: fmt(b) + (b > end ? ' ✕' : ''), after: out ? 'excede' : fmt(a),
+        style: 'display: grid; grid-template-columns: 40px minmax(0, 1fr) 80px 80px; gap: 10px; padding: 8px 14px; font-size: 13px; border-bottom: 1px solid #EFECE4; ' + (out ? 'background: #FDF3F1;' : ''),
+        afterStyle: 'font-family: IBM Plex Mono, monospace; font-weight: 600; ' + (out ? 'color: #8A1F16' : 'color: #0B4F43')
+      };
+    });
+    const ivs = [15, 20, 25, 30].map((v) => ({
+      label: v + ' min', on: st.iv === v ? 'true' : 'false', pick: () => this.setState({ iv: v }),
+      style: 'padding: 8px 12px; border-radius: 8px; font-size: 13px; font-weight: 600; ' + (st.iv === v ? 'background: #0B6B5A; color: #FFFFFF; border: 1px solid #0B6B5A' : 'background: #FFFFFF; color: #1D1C1A; border: 1px solid #CFCABE')
+    }));
+
+    // fixas
+    const promosDef = [
+      { name: 'Leve 3, ganhe 30% + cupom', arts: 3, active: true, use: '1 na fila de hoje', brief: 'Na compra de 3 produtos quaisquer, 30% de desconto automático no carrinho. O cupom global soma mais 15%. Tom animado, chamar para montar kit.' },
+      { name: 'Semana Ekos', arts: 2, active: true, use: '1 na fila de hoje', brief: 'Linha Ekos inteira com desconto durante a semana. Destacar ingredientes da biodiversidade e lembrar do cupom.' },
+      { name: 'Frete grátis acima de [VALOR]', arts: 1, active: false, use: 'fora da fila', brief: 'Frete grátis para compras acima de [VALOR]. Usar só quando a campanha estiver ativa.' }
+    ];
+    const promos = promosDef.map((p, i) => ({
+      name: p.name, meta: p.arts + (p.arts > 1 ? ' artes' : ' arte') + ' · ' + p.use,
+      status: p.active ? 'ativa' : 'pausada', chipStyle: p.active ? chip('#E2F2E6', '#1E6B3A') : chip('#F0EEE8', '#5F5B53'),
+      select: () => this.setState({ promoSel: i }),
+      style: 'display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 14px 16px; text-align: left; border-radius: 10px; color: #1D1C1A; ' + (st.promoSel === i ? 'background: #EEF6F3; border: 1.5px solid #0B6B5A' : 'background: #FFFFFF; border: 1px solid #E2DED4')
+    }));
+    const pd = promosDef[st.promoSel];
+    const artColors = ['#0B6B5A', '#7A4B2A', '#B5523B', '#2F5D7C'];
+    const arts = Array.from({ length: pd.arts }, (_, i) => ({
+      title: i === 0 ? pd.name : (i === 1 ? '30% + cupom' : 'Monte seu kit'),
+      origin: i === 0 ? 'upload · arte_kit_01.png' : 'template · ' + ['', 'Faixa', 'Selo'][i],
+      style: 'aspect-ratio: 1 / 1; border-radius: 8px; display: flex; align-items: flex-end; padding: 10px; box-sizing: border-box; font-size: 13px; font-weight: 700; line-height: 1.2; color: #FFFFFF; background: ' + artColors[(i + st.promoSel) % 4]
+    }));
+    const promo = { name: pd.name, brief: pd.brief, artCount: pd.arts, arts };
+    const layouts = [['faixa', 'Faixa'], ['centro', 'Centro'], ['dividido', 'Dividido'], ['selo', 'Selo']].map(([k, label]) => ({
+      label, on: st.layout === k ? 'true' : 'false', pick: () => this.setState({ layout: k }),
+      style: 'padding: 10px; border-radius: 8px; font-size: 13px; font-weight: 600; ' + (st.layout === k ? 'background: #0B6B5A; color: #FFFFFF; border: 1px solid #0B6B5A' : 'background: #FFFFFF; color: #1D1C1A; border: 1px solid #CFCABE')
+    }));
+    const swNames = ['Verde', 'Castanha', 'Terracota', 'Azul'];
+    const swatches = artColors.map((c, i) => ({
+      name: swNames[i], pick: () => this.setState({ artColor: c }),
+      style: 'width: 36px; height: 36px; border-radius: 50%; background: ' + c + '; border: ' + (st.artColor === c ? '3px solid #1D1C1A' : '3px solid #FFFFFF') + '; box-shadow: 0 0 0 1px #CFCABE'
+    }));
+    const ac = st.artColor;
+
+    // assinaturas
+    let nextSig = activeSigs.length ? activeSigs[0].i : -1;
+    const sigRows = sigs.map((t, i) => ({
+      n: String(i + 1).padStart(2, '0'), text: t,
+      next: i === nextSig ? 'próxima' : '', nextStyle: i === nextSig ? chip('#E3F0EC', '#0B4F43') : 'display: none',
+      on: st.sigsOn[i] ? 'true' : 'false', toggleLabel: st.sigsOn[i] ? 'Ativa' : 'Inativa',
+      toggle: () => this.setState({ sigsOn: Object.assign({}, st.sigsOn, { [i]: !st.sigsOn[i] }) }),
+      toggleStyle: 'min-width: 76px; padding: 7px 10px; border-radius: 6px; font-size: 12px; font-weight: 600; ' + (st.sigsOn[i] ? 'background: #0B6B5A; color: #FFFFFF; border: 1px solid #0B6B5A' : 'background: #FFFFFF; color: #5F5B53; border: 1px solid #CFCABE')
+    }));
+
+    // whatsapp groups
+    const groupsDef = [
+      ['Clube Beauty Promos 01', '1203634…1101@g.us', '1.024 membros'],
+      ['Clube Beauty Promos 02', '1203634…2202@g.us', '987 membros'],
+      ['Garimpo de Amigas', '1203634…3303@g.us', '1.012 membros'],
+      ['Rainha das Promoções', '1203634…4404@g.us', '1.019 membros']
+    ];
+    const groups = groupsDef.map(([name, jid, members], i) => ({
+      name, jid, members, on: !!st.groupsOn[i],
+      toggle: () => this.setState({ groupsOn: Object.assign({}, st.groupsOn, { [i]: !st.groupsOn[i] }) })
+    }));
+
+    const ok = 'color: #1E6B3A; font-weight: 600', bad = 'color: #8A1F16; font-weight: 600', warn = 'color: #6B4600; font-weight: 600';
+    const sent = [
+      { time: '08:00', name: D[1].name, groups: '3/3', mention: '—', result: 'enviado', style: ok },
+      { time: '08:30', name: D[2].name, groups: '3/3', mention: '—', result: 'enviado', style: ok },
+      { time: '09:00', name: 'Leve 3, ganhe 30% + cupom (fixa)', groups: '3/3', mention: '@todos', result: 'enviado', style: ok },
+      { time: '09:30', name: D[4].name, groups: '0/3', mention: '—', result: 'não enviado', style: warn },
+      { time: '10:00', name: D[5].name, groups: '2/3', mention: '—', result: 'falha parcial', style: bad }
+    ];
+
+    const lvl = (l) => l === 'ERRO' ? 'color: #FF8F80; font-weight: 600' : (l === 'AVISO' ? 'color: #F2C14E; font-weight: 600' : 'color: #7FD1A8; font-weight: 600');
+    const allLogs = [
+      ['04/10 10:00:41', 'ERRO', 'envio', 'Clube Beauty Promos 02: timeout após 30 s (item 10:00)'],
+      ['04/10 10:00:00', 'INFO', 'envio', 'Item 10:00 enviado para Clube Beauty Promos 01'],
+      ['04/10 09:48:12', 'INFO', 'whatsapp', 'Sessão natura voltou: WORKING'],
+      ['04/10 09:30:00', 'AVISO', 'fila', 'Item 09:30 marcado como não enviado (sessão caída)'],
+      ['04/10 09:20:05', 'ERRO', 'whatsapp', 'Sessão natura caiu: STOPPED. Fila pausada.'],
+      ['04/10 07:58:30', 'INFO', 'importacao', 'fila-natura-2026-10-04.csv: 10 itens, 0 erros, 8 textos IA'],
+      ['04/10 04:00:00', 'INFO', 'limpeza', 'Removidos 412 logs e 233 imagens com mais de 7 dias'],
+      ['04/10 00:00:00', 'INFO', 'fila', 'Virada do dia: fila de 03/10 zerada']
+    ];
+    const lf = st.logFilter;
+    const logs = allLogs.filter((l) => lf === 'todos' || (lf === 'erros' && l[1] === 'ERRO') || (lf === 'whatsapp' && l[2] === 'whatsapp') || (lf === 'envio' && l[2] === 'envio'))
+      .map(([at, level, event, msg]) => ({ at, level, event, msg, style: lvl(level) }));
+    const logFilters = [['todos', 'Todos'], ['erros', 'Só erros'], ['whatsapp', 'WhatsApp'], ['envio', 'Envio']].map(([k, label]) => ({
+      label, on: lf === k ? 'true' : 'false', pick: () => this.setState({ logFilter: k }),
+      style: 'padding: 8px 12px; border-radius: 999px; font-size: 13px; font-weight: 600; ' + (lf === k ? 'background: #1D1C1A; color: #FFFFFF; border: 1px solid #1D1C1A' : 'background: #FFFFFF; color: #1D1C1A; border: 1px solid #CFCABE')
+    }));
+
+    return {
+      nav, title: titles[screen], waDown, waUp: !waDown,
+      isFila: screen === 'fila', isFixas: screen === 'fixas', isSigs: screen === 'assinaturas', isConfig: screen === 'config',
+      isWhats: screen === 'whatsapp', isSent: screen === 'enviados', isLogs: screen === 'logs',
+      goWhatsApp: go('whatsapp'), logout: () => {},
+      toggleWa: () => this.setState({ waDown: !waDown }),
+      stats, items, sel, textModes,
+      maxOpts: [1, 2, 3, 4].map((n) => ({ label: String(n), pick: () => this.setState({ maxPer: n }), on: (st.maxPer || 2) === n ? 'true' : 'false',
+        style: 'width: 44px; height: 40px; border-radius: 8px; font-size: 14px; font-weight: 600; font-family: IBM Plex Mono, monospace; ' + ((st.maxPer || 2) === n ? 'background: #0B6B5A; color: #FFFFFF; border: 1px solid #0B6B5A' : 'background: #FFFFFF; color: #1D1C1A; border: 1px solid #CFCABE') })),
+      brandRules: [['livre', 'Livre'], ['misto', '1 Natura + 1 Avon'], ['mesma', 'Mesma marca']].map(([k, label]) => ({ label, pick: () => this.setState({ brandRule: k }), on: (st.brandRule || 'livre') === k ? 'true' : 'false',
+        style: 'padding: 9px 12px; border-radius: 8px; font-size: 13px; font-weight: 600; ' + ((st.brandRule || 'livre') === k ? 'background: #0B6B5A; color: #FFFFFF; border: 1px solid #0B6B5A' : 'background: #FFFFFF; color: #1D1C1A; border: 1px solid #CFCABE') })),
+      openImport: () => this.setState({ importOpen: true, espelho: false }),
+      openEspelho: () => this.setState({ importOpen: true, espelho: true }),
+      closeImport: () => this.setState({ importOpen: false, espelho: false }),
+      importOpen: st.importOpen, espelho: st.espelho, showSteps: !st.espelho,
+      modalTitle: st.espelho ? 'Espelho da fila — ajustar intervalo' : 'Importar CSV da extensão',
+      applyLabel: st.espelho ? (excess ? 'Aplicar e descartar ' + excess : 'Aplicar novo intervalo') : 'Aplicar na fila',
+      steps: [
+        { label: 'Imagens baixadas para o HD', value: '32/32' },
+        { label: 'Consultoria garantida no link', value: 'pechincheiro' },
+        { label: 'Cupom aplicado (preço final e economia)', value: 'PECHINCHA15 · 15%' },
+        { label: 'Chamadas geradas pela IA', value: '32/32' },
+        { label: 'Posts casados: montagem das fotos gerada', value: '3 posts · 6 produtos' },
+        { label: 'Fixas: arte sorteada + texto IA', value: '2/2' }
+      ],
+      ivs, mirror,
+      fitText: excess ? 'Com ' + st.iv + ' min ainda sobram ' + excess + ' itens depois das 22:00.' : 'Com ' + st.iv + ' min cabem os 34 itens. Último às ' + fmt(start + (total - 1) * st.iv) + '.',
+      fitStyle: 'padding: 10px 14px; border-radius: 8px; font-size: 14px; font-weight: 600; ' + (excess ? 'background: #FBE4E1; color: #8A1F16' : 'background: #E2F2E6; color: #1E6B3A'),
+      promos, promo, layouts, swatches,
+      artTitle: st.artTitle, artSub: st.artSub, artPct: st.artPct,
+      setTitle: (e) => this.setState({ artTitle: e.target.value }),
+      setSub: (e) => this.setState({ artSub: e.target.value }),
+      setPct: (e) => this.setState({ artPct: e.target.value }),
+      lyFaixa: st.layout === 'faixa', lyCentro: st.layout === 'centro', lyDividido: st.layout === 'dividido', lySelo: st.layout === 'selo',
+      artBand: 'display: flex; align-items: center; gap: 14px; padding: 16px 18px; color: #FFFFFF; background: ' + ac,
+      artCenter: 'width: 320px; height: 320px; border-radius: 10px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; text-align: center; padding: 20px; box-sizing: border-box; color: #FFFFFF; background: ' + ac,
+      artSplit: 'display: flex; flex-direction: column; justify-content: center; gap: 8px; padding: 18px; color: #FFFFFF; background: ' + ac,
+      artSeal: 'position: absolute; top: 16px; right: 16px; width: 104px; height: 104px; border-radius: 50%; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #FFFFFF; background: ' + ac,
+      sigs: sigRows,
+      templateText: '{chamada}\n\n*{nome}*\nDe ~{preco_de}~ por {preco_por}\nCom o cupom *{cupom}*: *{preco_final}* ({economia_pct} de economia)\n\n{link}\n\n{assinatura}',
+      vars: ['{chamada}', '{nome}', '{marca}', '{linha}', '{categoria}', '{nota}', '{preco_de}', '{preco_por}', '{preco_final}', '{cupom}', '{cupom_pct}', '{economia_pct}', '{link}', '{assinatura}'],
+      groups, sent, logs, logFilters
+    };
+  }
+}
+</script>
+</body>
+</html>

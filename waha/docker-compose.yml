@@ -1,0 +1,14 @@
+# WAHA do Promo Livros (porta 4443). Sessões no HD: ./sessions (antes ~/waha/sessions-livros).
+# Subir: docker compose -f "/Volumes/HD 1Tb/Vibecoding/Promo Livros/waha/docker-compose.yml" up -d
+name: promo-livros
+services:
+  waha-livros:
+    image: devlikeapro/waha:arm
+    container_name: waha-livros
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:4443:3000"
+    env_file:
+      - waha.env
+    volumes:
+      - ./sessions:/app/.sessions

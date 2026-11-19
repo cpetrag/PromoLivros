@@ -1,0 +1,6 @@
+{
+  "porta": 8791,
+  "host": "127.0.0.1",
+  "token": "troque-este-valor",
+  "db": "/Volumes/HD 1Tb/Vibecoding/Promo Livros/data/promo_livros.sqlite"
+}

@@ -42,6 +42,9 @@ class ConfigTests(unittest.TestCase):
         self.assertFalse(config.website_enabled)
         self.assertEqual(config.amz_link_api_url, "http://127.0.0.1:3070")
         self.assertEqual(config.amz_link_api_token, "")
+        self.assertEqual(config.shopee_app_id, "")
+        self.assertEqual(config.shopee_secret, "")
+        self.assertEqual(config.shopee_sub_id, "promolivros")
 
     def test_shipped_file_loads(self) -> None:
         path = Path(__file__).resolve().parents[1] / "config.yaml"
@@ -70,6 +73,17 @@ class ConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             with self.assertRaises(ConfigError):
                 load_sample(Path(folder), AMAZON_AFFILIATE_TAG="loja 20")
+
+    def test_loads_shopee_affiliate_from_env(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            config = load_sample(
+                Path(folder),
+                SHOPEE_APP_ID="123456",
+                SHOPEE_SECRET="secret-test",
+            )
+        self.assertEqual(config.shopee_app_id, "123456")
+        self.assertEqual(config.shopee_secret, "secret-test")
+        self.assertEqual(config.shopee_sub_id, "promolivros")
 
 
 if __name__ == "__main__":

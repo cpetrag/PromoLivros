@@ -1,49 +1,42 @@
 {
-  "started_utc": "2026-10-02T10:56:01.885592+00:00",
-  "finished_utc": "2026-10-02T11:38:35.160514+00:00",
+  "started_utc": "2026-11-19T07:20:56.095333+00:00",
+  "finished_utc": "2026-11-19T08:58:11.224955+00:00",
   "source_simple": "/Users/cpetrag/amazon-crawler/amazon-livros-2000-simple.csv",
   "resume": true,
   "unique_products": 2000,
-  "reused": 1775,
-  "scraped": 224,
-  "need_scrape": 225,
+  "reused": 1465,
+  "scraped": 535,
+  "need_scrape": 535,
   "skipped_after_block": 0,
   "blocker": null,
-  "errors": [
-    {
-      "asin": "6583924080",
-      "error": "Page.goto: Target page, context or browser has been closed"
-    },
-    {
-      "asin": "8542241762",
-      "error": "Page.goto: Target page, context or browser has been closed"
-    }
-  ],
-  "error_count": 2,
+  "errors": [],
+  "error_count": 0,
   "field_fill": {
     "titulo": 2000,
-    "autor": 1996,
+    "autor": 2000,
     "categoria": 2000,
-    "categoria_caminho": 1789,
+    "categoria_caminho": 1911,
     "formato": 1998,
-    "preco": 2000,
-    "preco_de": 1953,
+    "preco": 1999,
+    "preco_de": 1988,
     "menor_preco_365": 2000,
-    "badges": 1990,
-    "categoria_mais_vendido": 1208,
+    "badges": 1981,
+    "categoria_mais_vendido": 1690,
     "asin": 2000,
-    "link": 2000
+    "link": 2000,
+    "avaliacoes": 1945,
+    "nota": 1945
   },
-  "menor_sim": 1122,
-  "menor_nao": 878,
+  "menor_sim": 183,
+  "menor_nao": 1817,
   "csv": "/Users/cpetrag/amazon-crawler/amazon-livros-2000.csv",
   "hd_csv": "/Volumes/HD 1Tb/Vibecoding/Promo Livros/CSV Atualizado/amazon-livros-2000.csv",
-  "hd_dated": "/Volumes/HD 1Tb/Vibecoding/Promo Livros/CSV Atualizado/amazon_livros_2026-10-02.csv",
+  "hd_dated": "/Volumes/HD 1Tb/Vibecoding/Promo Livros/CSV Atualizado/amazon_livros_2026-11-19.csv",
   "sample_asins": [
-    "8539646374",
-    "853964780X",
+    "6555605553",
+    "6555445726",
+    "6550970288",
     "6559801365",
-    "B09PW8LBZD",
-    "B08Y3CV67L"
+    "8579308518"
   ]
 }

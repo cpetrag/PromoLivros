@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlparse
 
 import yaml
@@ -26,6 +27,11 @@ from promo_livros.dashboard_pages import (
 from promo_livros.day_view import DayView
 from promo_livros.groups_file import GroupChoice, GroupsFileError, group_choices, selected_groups, write_groups
 from promo_livros.models import ConfigError
+from promo_livros.multipart_form import MEDIA_TYPE as MULTIPART_MEDIA_TYPE
+from promo_livros.multipart_form import parse_multipart
+
+if TYPE_CHECKING:
+    from promo_livros.campaign_panel import CampaignCallbacks
 
 HOST = "127.0.0.1"
 PORT = 8787
@@ -33,6 +39,10 @@ COOKIE = "promo_livros_session"
 MAX_POST_BODY = 65536
 MAX_SETTINGS_BODY = 512_000
 MAX_CSV_BODY = 2_000_000
+MAX_WEBHOOK_BODY = 4_000_000
+MAX_CAMPAIGN_UPLOAD_BODY = 40 * 1024 * 1024
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_CAMPAIGN_ID = r"([0-9]{1,12})"
 
 
 @dataclass
@@ -59,6 +69,9 @@ class DashboardApp:
     save_schedule: Callable[[dict[str, list[str]]], None] | None = None
     repack_remaining: Callable[[], None] | None = None
     reorder_posts: Callable[[list[int]], None] | None = None
+    queue_action: Callable[[str, dict[str, list[str]]], dict] | None = None
+    swap_book: Callable[[dict[str, list[str]]], dict] | None = None
+    save_draft_order: Callable[[list[str], list[str]], dict] | None = None
     rush_post: Callable[[int], None] | None = None
     skip_post: Callable[[int], None] | None = None
     duplicate_post: Callable[[int], None] | None = None
@@ -75,6 +88,9 @@ class DashboardApp:
     curation_page: Callable[..., str] | None = None
     import_catalog_text: Callable[[str], str] | None = None
     import_catalog_folder: Callable[[], str] | None = None
+    import_fila_csv: Callable[[str], dict] | None = None
+    import_fila_passo: Callable[[str], dict] | None = None
+    import_fila_resolver: Callable[[str], dict] | None = None
     toggle_pick: Callable[..., dict] | None = None
     move_pick: Callable[..., dict] | None = None
     apply_picks: Callable[..., str] | None = None
@@ -88,13 +104,38 @@ class DashboardApp:
     move_tomorrow: Callable[[int], None] | None = None
     catalog_cover: Callable[[str], bytes] | None = None
     save_interval: Callable[[str], dict] | None = None
+    extension_call: Callable[..., tuple[int, dict]] | None = None
+    extension_token: Callable[[], str] | None = None
+    polls_page: Callable[[dict[str, list[str]]], str] | None = None
+    poll_detail: Callable[[int], str | None] | None = None
+    poll_csv: Callable[[int], str | None] | None = None
+    poll_save: Callable[[dict[str, list[str]]], str] | None = None
+    poll_action: Callable[[int, str], str] | None = None
+    poll_webhook: Callable[[dict, str], int] | None = None
+    campaigns: CampaignCallbacks | None = None
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
     app: DashboardApp
+    # Um cliente lento ou parado (upload de 40 MB pela metade) não pode prender uma thread para sempre.
+    timeout = 60
+
+    def do_OPTIONS(self) -> None:
+        path = urlparse(self.path).path
+        if path.startswith("/extensao/"):
+            self.send_response(204)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.end_headers()
+            return
+        self.send_error(404)
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path
+        if path.startswith("/extensao/"):
+            self._extensao(path)
+            return
         if path == "/whatsapp/qr":
             self._qr()
             return
@@ -122,6 +163,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == "/configuracoes" and self.app.settings_page:
             self._html(self.app.settings_page())
             return
+        if self.app.campaigns is not None and (path == "/campanhas" or path.startswith("/campanhas/")):
+            self._campaign_get(path)
+            return
         cover = re.fullmatch(r"/curadoria/capa/([A-Z0-9]{10}|MLB\d{6,14})\.jpg", path)
         if cover and self.app.catalog_cover:
             self._cover(cover.group(1))
@@ -132,6 +176,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if path == "/enviados" and self.app.sent:
             self._html(render_sent(self.app.sent()))
+            return
+        if path == "/enquetes" and self.app.polls_page is not None:
+            self._html(self.app.polls_page(parse_qs(urlparse(self.path).query)))
+            return
+        csv_match = re.fullmatch(r"/enquetes/(\d+)\.csv", path)
+        if csv_match and self.app.poll_csv is not None:
+            self._poll_csv(int(csv_match.group(1)))
+            return
+        detail_match = re.fullmatch(r"/enquetes/(\d+)", path)
+        if detail_match and self.app.poll_detail is not None:
+            page = self.app.poll_detail(int(detail_match.group(1)))
+            if page is None:
+                self.send_error(404)
+                return
+            self._html(page)
             return
         if self.app.board and path in {"/", "/hoje", "/hoje/parcial"}:
             ctx = self._board_context()
@@ -153,9 +212,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     paused_until=ctx["paused_until"],
                     members=ctx["members"],
                     repeat_days=ctx["repeat_days"],
+                    arquivo=ctx.get("arquivo"),
+                    invites=ctx["invites"],
                 ))
                 return
-                self._html(render_board(
+            self._html(render_board(
                 ctx["day"],
                 ctx["posts"],
                 notice=ctx["notice"],
@@ -168,6 +229,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 paused_until=ctx["paused_until"],
                 members=ctx["members"],
                 repeat_days=ctx["repeat_days"],
+                arquivo=ctx.get("arquivo"),
+                invites=ctx["invites"],
             ))
             return
         error, view = self.app.today()
@@ -175,12 +238,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self._html(render_today(day=day, view=view, error=error))
 
     def do_POST(self) -> None:
+        path = urlparse(self.path).path
+        if path.startswith("/extensao/"):
+            self._extensao(path)
+            return
+        if path == "/whatsapp/webhook":
+            self._poll_webhook()
+            return
         if not _same_origin(self):
             self.send_error(403)
             return
-        path = urlparse(self.path).path
         if path == "/curadoria/csv":
             self._import_csv()
+            return
+        if path == "/curadoria/fila/csv":
+            self._import_fila_csv()
+            return
+        if self.app.campaigns is not None and re.fullmatch(r"/campanhas/[^/]+/fotos", path):
+            self._campaign_upload(path)
             return
         form = _form(self, MAX_SETTINGS_BODY if path == "/configuracoes" else MAX_POST_BODY)
         if form is None:
@@ -200,6 +275,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not self._logged_in():
             self._html(login_page(failed=False))
             return
+        if path == "/enquetes" and self.app.poll_save is not None:
+            self._redirect(self.app.poll_save(form), self._token())
+            return
+        poll_action = re.fullmatch(r"/enquetes/(\d+)/(encerrar|parcial|fixar|desafixar|duplicar)", path)
+        if poll_action and self.app.poll_action is not None:
+            self._redirect(
+                self.app.poll_action(int(poll_action.group(1)), poll_action.group(2)),
+                self._token(),
+            )
+            return
+        if self.app.campaigns is not None:
+            if path == "/campanhas/config":
+                self._redirect(self.app.campaigns["save_settings"](form), self._token())
+                return
+            if path == "/campanhas/acao":
+                self._redirect(self.app.campaigns["action"](form), self._token())
+                return
+            if path == "/hoje/convite":
+                self.app.campaigns["choose"](form)
+                self._redirect("/hoje", self._token())
+                return
         if path == "/logout":
             self.app.sessions.forget(self._token())
             self._redirect("/", None)
@@ -238,6 +334,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.app.import_catalog_folder()
             self._redirect("/curadoria", self._token())
             return
+        if path == "/curadoria/fila/csv/passo" and self.app.import_fila_passo:
+            try:
+                self._json(self.app.import_fila_passo(_field(form, "job")))
+            except ValueError as exc:
+                self._json({"error": str(exc)})
+            return
+        if path == "/curadoria/fila/csv/resolver" and self.app.import_fila_resolver:
+            try:
+                self._json(self.app.import_fila_resolver(_field(form, "job")))
+            except ValueError as exc:
+                self._json({"error": str(exc)})
+            return
         if path == "/curadoria/fila/previa" and self.app.preview_picks:
             try:
                 self._json(self.app.preview_picks(_field(form, "ordem")))
@@ -275,6 +383,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == "/curadoria/preencher/desfazer" and self.app.undo_fill:
             self._json(self.app.undo_fill())
             return
+        if path == "/curadoria/fila/ordem" and self.app.save_draft_order:
+            try:
+                self._json(self.app.save_draft_order(form.get("amazon", []), form.get("segunda", [])))
+            except Exception as exc:
+                self._json({"error": str(exc)})
+            return
         if path == "/curadoria/preferencia" and self.app.save_order:
             self._json(self.app.save_order(_field(form, "ordem")))
             return
@@ -284,7 +398,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if path == "/configuracoes" and self.app.save_settings:
             self.app.save_settings(form)
-            self._redirect("/configuracoes?ok=1", self._token())
+            mark = "teste=1" if _field(form, "acao") == "testar" else "ok=1"
+            self._redirect(f"/configuracoes?{mark}", self._token())
             return
         if path == "/grupos":
             try:
@@ -340,6 +455,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == "/hoje/reorganizar" and self.app.repack_remaining:
             self.app.repack_remaining()
             self._redirect("/hoje", self._token())
+            return
+        queue_action = re.fullmatch(r"/hoje/(trocar|antes|horario|empurrar|reespacar|horarios/desfazer)", path)
+        if queue_action and self.app.queue_action:
+            self._json(self.app.queue_action(queue_action.group(1).replace("horarios/", ""), form))
+            return
+        if path == "/hoje/trocar-livro" and self.app.swap_book:
+            self._json(self.app.swap_book(form))
             return
         if path == "/hoje/reordenar" and self.app.reorder_posts:
             ids: list[int] = []
@@ -444,6 +566,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         self._json({"ok": True, "message": message})
 
+    def _import_fila_csv(self) -> None:
+        if not _same_origin(self):
+            self.send_error(403)
+            return
+        if not self._logged_in() or self.app.import_fila_csv is None:
+            self._html(login_page(failed=False))
+            return
+        length = _content_length(self, MAX_CSV_BODY)
+        if length is None:
+            return
+        text = self.rfile.read(length).decode("utf-8-sig", errors="replace")
+        try:
+            payload = self.app.import_fila_csv(text)
+        except ValueError as exc:
+            self._json({"error": str(exc)})
+            return
+        self._json(payload)
+
     def _card(self, post_id: int) -> None:
         if not self._logged_in() or self.app.card_file is None:
             self._html(login_page(failed=False))
@@ -459,6 +599,73 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
+
+    def _campaign_get(self, path: str) -> None:
+        campaigns = self.app.campaigns
+        if path == "/campanhas":
+            self._html(campaigns["page"]())
+            return
+        detail = re.fullmatch(rf"/campanhas/{_CAMPAIGN_ID}", path)
+        if detail:
+            page = campaigns["detail"](int(detail.group(1)))
+            if page is None:
+                self.send_error(404)
+                return
+            self._html(page)
+            return
+        photo = re.fullmatch(rf"/campanhas/foto/{_CAMPAIGN_ID}\.jpg", path)
+        payload = campaigns["image"](int(photo.group(1))) if photo else None
+        if payload is None:
+            self.send_error(404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "image/jpeg")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "private, max-age=86400")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _campaign_upload(self, path: str) -> None:
+        """Lê o corpo aqui, e não em _form, porque as fotos passam do limite dos formulários comuns."""
+        # O corpo não é lido nas recusas abaixo; a conexão fecha para não sobrar lixo nela.
+        self.close_connection = True
+        if not self._logged_in():
+            self._html(login_page(failed=False))
+            return
+        match = re.fullmatch(rf"/campanhas/{_CAMPAIGN_ID}/fotos", path)
+        if match is None:
+            self.send_error(404)
+            return
+        campaign_id = int(match.group(1))
+        back = f"/campanhas/{campaign_id}"
+        media_type = self.headers.get("Content-Type", "").partition(";")[0].strip().lower()
+        if media_type != MULTIPART_MEDIA_TYPE:
+            self._refuse_upload(back, "Envie as fotos pelo formulário da campanha.")
+            return
+        raw_length = (self.headers.get("Content-Length") or "").strip()
+        if not (raw_length.isascii() and raw_length.isdigit()):
+            self.send_error(411)
+            return
+        length = int(raw_length)
+        if length > MAX_CAMPAIGN_UPLOAD_BODY:
+            limit_mb = MAX_CAMPAIGN_UPLOAD_BODY // (1024 * 1024)
+            self._refuse_upload(back, f"O envio passa de {limit_mb} MB. Mande menos fotos de cada vez.")
+            return
+        body = self.rfile.read(length)
+        if len(body) != length:
+            self.send_error(400)
+            return
+        try:
+            _fields, files = parse_multipart(self.headers.get("Content-Type", ""), body)
+        except ValueError as exc:
+            self._refuse_upload(back, str(exc))
+            return
+        self._redirect(self.app.campaigns["upload"](campaign_id, files.get("fotos", [])), self._token())
+
+    def _refuse_upload(self, location: str, message: str) -> None:
+        self.app.campaigns["notify"](message)
+        self._redirect(location, self._token())
 
     def _logged_in(self) -> bool:
         return self.app.sessions.valid(self._token())
@@ -496,16 +703,96 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "paused_until": extra.get("paused_until") or "",
             "members": extra.get("members"),
             "repeat_days": extra.get("repeat_days") or 1,
+            "arquivo": extra.get("arquivo"),
+            "invites": extra.get("invites") or "",
         }
 
+    def _extensao(self, path: str) -> None:
+        if self.app.extension_call is None:
+            self._ext_json({"error": "A extensão não está ligada."}, status=404)
+            return
+        body: dict = {}
+        if self.command == "POST":
+            length = _content_length(self, MAX_POST_BODY)
+            if length is None:
+                return
+            raw = self.rfile.read(length).decode("utf-8", errors="replace") if length else ""
+            if raw:
+                try:
+                    loaded = json.loads(raw)
+                except json.JSONDecodeError:
+                    self._ext_json({"error": "Não entendi esse pedido."}, status=400)
+                    return
+                if not isinstance(loaded, dict):
+                    self._ext_json({"error": "Não entendi esse pedido."}, status=400)
+                    return
+                body = loaded
+        status, payload = self.app.extension_call(
+            self.command,
+            path,
+            parse_qs(urlparse(self.path).query),
+            body,
+            self.headers.get("Authorization", ""),
+        )
+        self._ext_json(payload, status=status)
+
+    def _ext_json(self, payload: dict, status: int = 200) -> None:
+        raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
     def _json(self, payload: dict) -> None:
+        self._status_json(payload, 200)
+
+    def _status_json(self, payload: dict, status: int) -> None:
         raw = json.dumps(payload).encode("utf-8")
-        self.send_response(200)
+        self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
+
+    def _poll_webhook(self) -> None:
+        if self.app.poll_webhook is None:
+            self.send_error(404)
+            return
+        length = _content_length(self, MAX_WEBHOOK_BODY)
+        if length is None:
+            return
+        raw = self.rfile.read(length) if length else b""
+        try:
+            loaded = json.loads(raw.decode("utf-8")) if raw else {}
+        except json.JSONDecodeError:
+            self._status_json({"ok": False}, 400)
+            return
+        if not isinstance(loaded, dict):
+            self._status_json({"ok": False}, 400)
+            return
+        status = self.app.poll_webhook(loaded, self.headers.get("X-Api-Key", ""))
+        self._status_json({"ok": status == 200}, status)
+
+    def _poll_csv(self, poll_id: int) -> None:
+        if self.app.poll_csv is None:
+            self.send_error(404)
+            return
+        body = self.app.poll_csv(poll_id)
+        if body is None:
+            self.send_error(404)
+            return
+        payload = body.encode("utf-8-sig")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/csv; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="enquete-{poll_id}.csv"')
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
 
     def _html(self, body: str) -> None:
         payload = body.encode("utf-8")
@@ -865,10 +1152,23 @@ def build_app(config, username: str, password: str) -> DashboardApp:
                 "paused_until": paused,
                 "members": read_members(day),
                 "repeat_days": board_store.repeat_days(),
+                "arquivo": board_store.sent_feed(),
+                "invites": invites_html(),
             },
         )
 
+    def invites_html() -> str:
+        try:
+            return campaign_panel["invites"]()
+        except Exception as exc:
+            # O cartão de convites é acessório: um erro nele não pode derrubar a /hoje.
+            logging.getLogger("promo_livros").error(
+                "Não consegui montar os convites da /hoje: %s", type(exc).__name__
+            )
+            return ""
+
     def sent():
+        queue_day()
         return [(line.when, line.title, line.detail) for line in board_store.sent_lines()]
 
     def move_post(post_id: int, direction: int) -> None:
@@ -878,6 +1178,32 @@ def build_app(config, username: str, password: str) -> DashboardApp:
 
     def cancel_post(post_id: int) -> None:
         board_store.cancel(queue_day(), post_id)
+
+    def queue_action(acao: str, form: dict[str, list[str]]) -> dict:
+        from promo_livros.fila_acoes import executar
+
+        now = datetime.now(zone(config.schedule.timezone))
+        try:
+            return executar(board_store, queue_day(), now.strftime("%H:%M"), acao, form)
+        except Exception:
+            logging.getLogger("promo_livros").exception("A ação %s da grade falhou.", acao)
+            return {"ok": False, "error": "Não mudei os horários. Tente de novo."}
+
+    def swap_book(form: dict[str, list[str]]) -> dict:
+        from promo_livros.troca_livro import trocar_livro
+
+        try:
+            post_id = int(_field(form, "id"))
+            com_id = int(_field(form, "com"))
+        except ValueError:
+            return {"ok": False, "error": "Pedido incompleto. Atualize a página."}
+        try:
+            return trocar_livro(
+                board_store, cards_dir, queue_day(), post_id, com_id, _field(form, "lado"), fetch_cover=catalog_cover
+            )
+        except Exception:
+            logging.getLogger("promo_livros").exception("A troca de livro entre %s e %s falhou.", post_id, com_id)
+            return {"ok": False, "error": "Não troquei o livro. Tente de novo."}
 
     def read_link(url: str) -> dict:
         """Lê a oferta de um link avulso para o compositor preencher os campos."""
@@ -1076,6 +1402,7 @@ def build_app(config, username: str, password: str) -> DashboardApp:
         mercado_livre_csv,
         parse_csv,
         publish_selection,
+        shopee_csv,
         split_store_posts,
         fill_blurbs,
     )
@@ -1094,6 +1421,7 @@ def build_app(config, username: str, password: str) -> DashboardApp:
     from promo_livros.fila_aplicar import MemoriaPrevia
 
     previas = MemoriaPrevia()
+    fila_jobs: dict = {}
     catalog_folder = Path("CSV Atualizado")
     cover_cache = Path("data") / "covers"
     board_store.put_setting("curation", "manual")
@@ -1116,11 +1444,19 @@ def build_app(config, username: str, password: str) -> DashboardApp:
         mercado = mercado_livre_csv(catalog_folder)
         notes.extend(_reload_catalog(found, catalog.replace, "source_stamp", lambda: len(catalog.picked())))
         notes.extend(
-            _reload_catalog(mercado, catalog.replace_ml, "ml_source_stamp", lambda: len(catalog.ml_picked()))
+            _reload_catalog(mercado, catalog.replace_ml, "ml_source_stamp", lambda: _second_marks("ml"))
+        )
+        notes.extend(
+            _reload_catalog(
+                shopee_csv(catalog_folder), catalog.replace_shopee, "shopee_source_stamp", lambda: _second_marks("shopee")
+            )
         )
         _tag_kids(found, "amazon", "kids_stamp_v3")
         _tag_kids(mercado, "ml", "ml_kids_stamp_v3")
         return notes
+
+    def _second_marks(store: str) -> int:
+        return sum(1 for book in catalog.ml_picked() if book.store == store)
 
     def _tag_kids(path: Path | None, kind: str, stamp_key: str) -> None:
         if path is None:
@@ -1173,6 +1509,7 @@ def build_app(config, username: str, password: str) -> DashboardApp:
             notice = " ".join(part for part in [notice, *loaded] if part)
         found = latest_csv(catalog_folder)
         mercado = mercado_livre_csv(catalog_folder)
+        shopee_file = shopee_csv(catalog_folder)
         from promo_livros.fila import horarios_livres
         from promo_livros.fila_aplicar import previa
 
@@ -1181,33 +1518,36 @@ def build_app(config, username: str, password: str) -> DashboardApp:
         agora = now.strftime("%H:%M")
         clocks = horarios_livres(schedule.start, schedule.end, schedule.post_interval_minutes, agora)
         ordem = board_store.setting("curation_order") or "mine"
-        mercado_livre = loja == "mercadolivre"
+        store = {"mercadolivre": "ml", "shopee": "shopee"}.get(loja, "amazon")
         amazon_books = catalog.books()
-        ml_books = catalog.ml_books()
-        books = ml_books if mercado_livre else amazon_books
-        index = TitleIndex(amazon_books, ml_books)
+        second_books = catalog.ml_books()
+        ml_books = [book for book in second_books if book.store == "ml"]
+        shopee_books = [book for book in second_books if book.store == "shopee"]
+        books = {"ml": ml_books, "shopee": shopee_books}.get(store, amazon_books)
+        index = TitleIndex(amazon_books, second_books)
+        store_names = {"ml": "no Mercado Livre", "shopee": "na Shopee"}
         peers = {}
         covers = {}
         for book in books:
-            peer = index.amazon_for(book) if mercado_livre else index.ml_for(book)
+            peer = index.ml_for(book) if store == "amazon" else index.amazon_for(book)
             if peer is None:
                 continue
             price = f" · {format_brl(peer.price_cents)}" if peer.price_cents is not None else ""
-            peers[book.asin] = (
-                f"Existe na Amazon{price}" if mercado_livre else f"Existe no Mercado Livre{price}"
-            )
-            if mercado_livre:
+            where = store_names.get(peer.store, "na Amazon")
+            peers[book.asin] = f"Existe {where}{price}"
+            if store == "ml":
                 covers[book.asin] = cover_url(peer.asin)
-        active_file = mercado if mercado_livre else found
+        active_file = {"ml": mercado, "shopee": shopee_file}.get(store, found)
+        sources = {"ml": catalog.ml_source_name, "shopee": catalog.shopee_source_name}
         return render_curation(
             books,
-            source=catalog.ml_source_name() if mercado_livre else catalog.source_name(),
+            source=sources.get(store, catalog.source_name)(),
             folder_file=active_file.name if active_file else "",
             captured=capture_clock(active_file, config.schedule.timezone) if active_file else "",
             notice=notice if isinstance(notice, str) else None,
             clocks=clocks,
             interval=schedule.post_interval_minutes,
-            store="ml" if mercado_livre else "amazon",
+            store=store,
             peers=peers,
             covers=covers,
             marked=catalog.picked_total(),
@@ -1217,6 +1557,14 @@ def build_app(config, username: str, password: str) -> DashboardApp:
             plan=previa(catalog, board_store, current_day(), agora, ordem, previas),
             amazon_books=amazon_books,
             ml_books=ml_books,
+            shopee_books=shopee_books,
+            reviews=catalog.reviews(),
+            ml_lows={
+                **catalog.price_lows("ml", {book.asin: book.price_cents for book in ml_books}),
+                **catalog.price_lows("shopee", {book.asin: book.price_cents for book in shopee_books}),
+            },
+            shopee_file=shopee_file.name if shopee_file else "",
+            shopee_captured=capture_clock(shopee_file, config.schedule.timezone) if shopee_file else "",
             agora=agora,
             inicio=schedule.start,
             fim=schedule.end,
@@ -1225,6 +1573,7 @@ def build_app(config, username: str, password: str) -> DashboardApp:
             ml_file=mercado.name if mercado else "",
             amazon_captured=capture_clock(found, config.schedule.timezone) if found else "",
             ml_captured=capture_clock(mercado, config.schedule.timezone) if mercado else "",
+            extension_token=extension_token(),
         )
 
     def _pick_plan(clocks: list[str] | None = None) -> list[dict]:
@@ -1242,10 +1591,15 @@ def build_app(config, username: str, password: str) -> DashboardApp:
 
     def import_catalog_text(text: str) -> str:
         rows = parse_csv(text)
-        if catalog_kind(rows) == "ml":
-            marked = len(catalog.ml_picked())
+        kind = catalog_kind(rows)
+        if kind == "ml":
+            marked = _second_marks("ml")
             count = catalog.replace_ml(rows, "arquivo do computador")
             holder["curation_notice"] = _loaded_note("CSV do Mercado Livre carregado", count, marked)
+        elif kind == "shopee":
+            marked = _second_marks("shopee")
+            count = catalog.replace_shopee(rows, "arquivo do computador")
+            holder["curation_notice"] = _loaded_note("CSV da Shopee carregado", count, marked)
         else:
             marked = len(catalog.picked())
             count = catalog.replace(rows, "arquivo do computador")
@@ -1256,28 +1610,135 @@ def build_app(config, username: str, password: str) -> DashboardApp:
         notes = []
         found = latest_csv(catalog_folder)
         mercado = mercado_livre_csv(catalog_folder)
-        if found is None and mercado is None:
+        shopee = shopee_csv(catalog_folder)
+        if found is None and mercado is None and shopee is None:
             holder["curation_notice"] = "Não achei os CSVs na pasta CSV Atualizado."
             return str(holder["curation_notice"])
         if found is not None:
             notes.append(_import_folder_file(found, catalog.replace, "source_stamp", lambda: len(catalog.picked())))
         if mercado is not None:
             notes.append(
-                _import_folder_file(mercado, catalog.replace_ml, "ml_source_stamp", lambda: len(catalog.ml_picked()))
+                _import_folder_file(mercado, catalog.replace_ml, "ml_source_stamp", lambda: _second_marks("ml"))
+            )
+        if shopee is not None:
+            notes.append(
+                _import_folder_file(shopee, catalog.replace_shopee, "shopee_source_stamp", lambda: _second_marks("shopee"))
             )
         holder["curation_notice"] = " ".join(note for note in notes if note)
         return str(holder["curation_notice"])
 
+    def import_fila_csv(text: str) -> dict:
+        from promo_livros.fila_csv import ImportacaoFila, previa_do_csv
+
+        now = datetime.now(zone(config.schedule.timezone))
+        schedule = board_store.send_schedule()
+        payload = previa_do_csv(
+            catalog,
+            board_store,
+            current_day(),
+            now.strftime("%H:%M"),
+            schedule.end,
+            text,
+            previas,
+        )
+        job = ImportacaoFila(payload)
+        fila_jobs[job.id] = job
+        if len(fila_jobs) > 4:
+            for key in list(fila_jobs)[:-4]:
+                del fila_jobs[key]
+        return job.visao()
+
+    def import_fila_passo(job_id: str) -> dict:
+        from promo_livros.catalog import publish_selection
+        from promo_livros.fila_csv import avancar, livros_da_previa
+        from promo_livros.ml_links import session_from_export, thumbnail_url
+
+        job = fila_jobs.get(job_id or "")
+        if job is None:
+            raise CatalogError("Essa importação não está mais aqui. Envie o arquivo de novo.")
+
+        def gravar(atual) -> str:
+            finais = {
+                book.get("url_chave") or book.get("url") or "": book.get("url_final") or book.get("url_chave") or book.get("url") or ""
+                for book in atual.livros.values()
+            }
+
+            def describe(title: str, author: str = "") -> str:
+                for book in atual.livros.values():
+                    if book["title"] == title:
+                        return book.get("blurb") or ""
+                return ""
+
+            def cached(urls: list[str]) -> list[str]:
+                return [finais.get(url, url) for url in urls]
+
+            return publish_selection(
+                catalog,
+                board_store,
+                current_day(),
+                "00:00",
+                cards_dir,
+                slots_fixos=atual.slots_ids,
+                livros_extra=livros_da_previa({"livros": list(atual.livros.values())}),
+                resolve_urls=cached,
+                resolve_ml=cached,
+                resolve_shopee=cached,
+                thumbnail=lambda item: thumbnail_url(
+                    item,
+                    cookie=session_from_export(board_store.setting("ml_cookies") or "")[0],
+                ),
+                describe=describe,
+            )
+
+        return avancar(
+            job,
+            resolve_amazon=resolve_urls,
+            resolve_ml=resolve_ml_estrito,
+            resolve_shopee=resolve_shopee_estrito,
+            describe=book_line,
+            gravar=gravar,
+        )
+
+    def import_fila_resolver(job_id: str) -> dict:
+        from promo_livros.fila_csv import resolver_links
+
+        job = fila_jobs.get(job_id or "")
+        if job is None:
+            raise CatalogError("Essa importação não está mais aqui. Envie o arquivo de novo.")
+        return resolver_links(
+            job,
+            resolve_amazon=resolve_urls,
+            resolve_ml=resolve_ml_estrito,
+            resolve_shopee=resolve_shopee_estrito,
+        )
+
+    def resolve_ml_estrito(urls: list[str]) -> list[str]:
+        from promo_livros.ml_links import links_de_afiliado
+
+        export = board_store.setting("ml_cookies") or ""
+        tag = board_store.setting("ml_tag") or DEFAULT_TAG
+        return links_de_afiliado(urls, export, tag)
+
+    def resolve_shopee_estrito(urls: list[str]) -> list[str]:
+        from promo_livros.shopee_links import links_de_afiliado as links_shopee
+
+        return links_shopee(
+            urls,
+            config.shopee_app_id,
+            config.shopee_secret,
+            config.shopee_sub_id,
+        )
+
     def toggle_pick(asin: str, picked: bool, loja: str = "amazon") -> dict:
         day = current_day()
-        if loja == "ml":
+        if loja in {"ml", "shopee"}:
             total = catalog.set_ml_picked(asin, picked, day)
         else:
             total = catalog.set_picked(asin, picked, day)
         return {"picked": total, "plan": _pick_plan()}
 
     def move_pick(asin: str, loja: str, step: int) -> dict:
-        catalog.move_pick(asin, "ml" if loja == "ml" else "amazon", step)
+        catalog.move_pick(asin, loja if loja in {"ml", "shopee"} else "amazon", step)
         return {"picked": catalog.picked_total(), "plan": _pick_plan()}
 
     def resolve_ml(urls: list[str]) -> list[str]:
@@ -1314,6 +1775,36 @@ def build_app(config, username: str, password: str) -> DashboardApp:
         holder["notice"] = notice
         return notice
 
+    def extension_token() -> str:
+        from promo_livros.extensao import token_da_extensao
+
+        return token_da_extensao(board_store)
+
+    def extension_call(method: str, path: str, query: dict, body: dict, authorization: str) -> tuple[int, dict]:
+        from promo_livros.extensao import atender
+
+        now = datetime.now(zone(config.schedule.timezone))
+        return atender(
+            method,
+            path,
+            query,
+            body,
+            authorization,
+            catalog=catalog,
+            board=board_store,
+            day=current_day(),
+            agora=now.strftime("%H:%M"),
+            memoria=previas,
+            cards_dir=cards_dir,
+            resolve_urls=resolve_urls,
+            resolve_ml=resolve_ml,
+            thumbnail=lambda item: thumbnail_url(
+                item,
+                cookie=session_from_export(board_store.setting("ml_cookies") or "")[0],
+            ),
+            describe=book_line,
+        )
+
     def preview_picks(ordem: str = "") -> dict:
         from promo_livros.fila_aplicar import previa
 
@@ -1329,9 +1820,23 @@ def build_app(config, username: str, password: str) -> DashboardApp:
         return notice
 
     def save_order(ordem: str) -> dict:
+        from promo_livros.fila_aplicar import limpar_ordem_manual
+
         chosen = ordem if ordem in {"mine", "desc", "mix"} else "mine"
         board_store.put_setting("curation_order", chosen)
+        limpar_ordem_manual(board_store)
         return preview_picks(chosen)
+
+    def save_draft_order(amazon: list[str], segunda: list[str]) -> dict:
+        from promo_livros.catalog import CatalogError
+        from promo_livros.fila_aplicar import salvar_ordem_manual
+
+        try:
+            salvar_ordem_manual(board_store, current_day(), amazon, segunda)
+        except CatalogError as exc:
+            return {"error": str(exc)}
+        board_store.put_setting("curation_order", "mine")
+        return preview_picks("mine")
 
     def clear_picks() -> dict:
         previous = catalog.clear_marks()
@@ -1348,7 +1853,7 @@ def build_app(config, username: str, password: str) -> DashboardApp:
         plan = preview_picks(board_store.setting("curation_order") or "mine")
         clocks = plan.get("clocks") or []
         amazon_count = sum(1 for slot in plan["slots"] if slot.get("amazon"))
-        ml_count = sum(1 for slot in plan["slots"] if slot.get("ml"))
+        ml_count = sum(1 for slot in plan["slots"] if slot.get("ml") or slot.get("shopee"))
         gaps = {
             "amazon": max(0, len(clocks) - amazon_count),
             "ml": max(0, len(clocks) - ml_count),
@@ -1424,28 +1929,94 @@ def build_app(config, username: str, password: str) -> DashboardApp:
         return cached_cover(cover_cache, asin)
 
     def settings_page() -> str:
+        from promo_livros.blurb import research_prompt
+
         cookies = board_store.setting("ml_cookies") or ""
         tag = board_store.setting("ml_tag") or DEFAULT_TAG
+        prompt = board_store.setting("resenha_prompt") or research_prompt()
         notice = holder.get("settings_notice")
         holder["settings_notice"] = None
         saved = bool(holder.pop("settings_saved", False))
+        draft = holder.pop("settings_draft", None)
+        titulo = ""
+        autor = ""
+        resultado = ""
+        if isinstance(draft, dict):
+            cookies = str(draft.get("cookies") or cookies)
+            tag = str(draft.get("tag") or tag)
+            prompt = str(draft.get("prompt") or prompt)
+            titulo = str(draft.get("titulo") or "")
+            autor = str(draft.get("autor") or "")
+            resultado = str(draft.get("resultado") or "")
         return render_settings(
             cookies,
             tag,
             saved=saved,
             ready=session_ready(cookies),
             notice=notice if isinstance(notice, str) else None,
+            prompt=prompt,
+            titulo=titulo,
+            autor=autor,
+            resultado=resultado,
         )
 
     def save_settings(form: dict[str, list[str]]) -> None:
+        from promo_livros.blurb import research_prompt
+
         tag = _field(form, "tag") or DEFAULT_TAG
+        prompt = _field(form, "prompt").strip() or research_prompt()
+        titulo = _field(form, "titulo")
+        autor = _field(form, "autor")
+        if len(prompt) > 4000:
+            holder["settings_notice"] = "O prompt passa de 4000 caracteres."
+            holder["settings_draft"] = {
+                "cookies": _field(form, "cookies"),
+                "tag": tag,
+                "prompt": prompt[:4000],
+                "titulo": titulo,
+                "autor": autor,
+            }
+            return
+        if _field(form, "acao") == "testar":
+            holder["settings_draft"] = {
+                "cookies": _field(form, "cookies"),
+                "tag": tag,
+                "prompt": prompt,
+                "titulo": titulo,
+                "autor": autor,
+                "resultado": _test_prompt(prompt, titulo, autor),
+            }
+            return
         if re.fullmatch(r"[A-Za-z0-9_-]{3,40}", tag) is None:
             holder["settings_notice"] = "A tag só pode ter letras, números, _ e hífen."
+            holder["settings_draft"] = {
+                "cookies": _field(form, "cookies"),
+                "tag": tag,
+                "prompt": prompt,
+                "titulo": titulo,
+                "autor": autor,
+            }
             return
         board_store.put_setting("ml_cookies", _field(form, "cookies"))
         board_store.put_setting("ml_tag", tag)
+        board_store.put_setting("resenha_prompt", prompt)
         holder["settings_saved"] = True
         _convert_queued_links()
+
+    def _test_prompt(prompt: str, title: str, author: str) -> str:
+        name = " ".join(title.split())
+        if not name:
+            return "Escreva o título do livro para testar."
+        if review_writer is None:
+            return "A chave da OpenAI não está configurada."
+        try:
+            line = review_writer.research(title=name, author=author.strip(), prompt=prompt) or ""
+        except OpenAIAuthError:
+            return "A chave da OpenAI foi recusada."
+        except Exception:
+            logging.getLogger("promo_livros").warning("O teste do prompt falhou.", exc_info=True)
+            return "Não consegui gerar a resenha."
+        return line or "A resenha veio vazia."
 
     def _convert_queued_links() -> None:
         export = board_store.setting("ml_cookies") or ""
@@ -1502,7 +2073,8 @@ def build_app(config, username: str, password: str) -> DashboardApp:
             if cached:
                 return cached
             try:
-                line = review_writer.research(title=title, author=author) or ""
+                prompt = board_store.setting("resenha_prompt") or ""
+                line = review_writer.research(title=title, author=author, prompt=prompt) or ""
             except OpenAIAuthError:
                 reviews_stopped["value"] = True
                 logging.getLogger("promo_livros").warning(
@@ -1526,6 +2098,28 @@ def build_app(config, username: str, password: str) -> DashboardApp:
     if opened:
         holder["notice"] = f"A fila de ontem saiu ({opened} posts). Ela vale só para a data e a hora."
     catalog.migrate_pick_states(set(board_store.sent_product_clocks(current_day())), current_day())
+    from promo_livros.poll_panel import poll_callbacks
+    from promo_livros.polls import PollStore
+
+    polls = poll_callbacks(config, PollStore(config.sqlite_path))
+    from promo_livros.campaign_panel import campaign_callbacks
+    from promo_livros.campaign_store import CampaignStore
+
+    campaign_panel = campaign_callbacks(
+        config,
+        board_store,
+        CampaignStore(config.sqlite_path),
+        root=PROJECT_ROOT,
+        current_day=current_day,
+        now=lambda: datetime.now(zone(config.schedule.timezone)),
+    )
+
+    def choose_invite(form: dict[str, list[str]]) -> str:
+        notice = campaign_panel["choose"](form)
+        holder["notice"] = notice
+        return notice
+
+    campaign_routes: CampaignCallbacks = {**campaign_panel, "choose": choose_invite}
     started = _sync_catalogs()
     if started:
         holder["curation_notice"] = " ".join(started)
@@ -1559,6 +2153,9 @@ def build_app(config, username: str, password: str) -> DashboardApp:
         save_schedule=save_rules,
         repack_remaining=repack_remaining,
         reorder_posts=reorder_posts,
+        queue_action=queue_action,
+        swap_book=swap_book,
+        save_draft_order=save_draft_order,
         rush_post=rush_post,
         skip_post=skip_post,
         duplicate_post=duplicate_post,
@@ -1575,6 +2172,9 @@ def build_app(config, username: str, password: str) -> DashboardApp:
         curation_page=curation_page,
         import_catalog_text=import_catalog_text,
         import_catalog_folder=import_catalog_folder,
+        import_fila_csv=import_fila_csv,
+        import_fila_passo=import_fila_passo,
+        import_fila_resolver=import_fila_resolver,
         toggle_pick=toggle_pick,
         move_pick=move_pick,
         apply_picks=apply_picks,
@@ -1588,6 +2188,15 @@ def build_app(config, username: str, password: str) -> DashboardApp:
         move_tomorrow=move_tomorrow,
         catalog_cover=catalog_cover,
         save_interval=save_interval,
+        extension_call=extension_call,
+        extension_token=extension_token,
+        polls_page=polls["page"],
+        poll_detail=polls["detail"],
+        poll_csv=polls["csv"],
+        poll_save=polls["save"],
+        poll_action=polls["action"],
+        poll_webhook=polls["webhook"],
+        campaigns=campaign_routes,
     )
 
 

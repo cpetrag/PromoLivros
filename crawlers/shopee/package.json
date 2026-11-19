@@ -1,0 +1,14 @@
+{
+  "name": "shopee-livros-crawler",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "login": "node login.mjs",
+    "coletar": "node shopee-livros.mjs",
+    "teste": "node shopee-livros.mjs --paginas 1 --consultas geral-vendas --sem-pdp --saida ./out",
+    "test": "node --test lib/mapping.test.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.56.0"
+  }
+}

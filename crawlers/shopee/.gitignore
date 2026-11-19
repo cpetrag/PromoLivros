@@ -1,0 +1,6 @@
+node_modules/
+profile/
+logs/
+out/
+.env
+categorias-shopee.json

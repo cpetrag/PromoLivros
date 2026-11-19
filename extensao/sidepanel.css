@@ -1,0 +1,56 @@
+:root {
+  color-scheme: light;
+  font-family: Inter, "Segoe UI", sans-serif;
+  background: #eef1f4;
+  color: #1b1f24;
+}
+
+body { margin: 0; padding: 12px; }
+
+header, .actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+}
+
+h1 { font-size: 1.15rem; margin: 0; }
+
+button, select, input {
+  font: inherit;
+  border-radius: 999px;
+  border: 0;
+  background: #1b1f24;
+  color: #fff;
+  padding: 8px 12px;
+}
+
+button.ghost, select, input {
+  background: #fff;
+  color: #1b1f24;
+  border: 1px solid #e3e7ec;
+}
+
+label { display: grid; gap: 4px; margin: 10px 0; font-weight: 600; }
+
+#status { color: #6b7480; min-height: 1.2em; }
+
+.slot {
+  display: grid;
+  grid-template-columns: 3.2rem 1fr;
+  gap: 6px;
+  background: #fff;
+  border-radius: 12px;
+  padding: 8px;
+  margin: 6px 0;
+}
+
+.clock { font-weight: 700; color: #2f6fdb; }
+
+.half { margin: 0; font-size: 0.86rem; }
+
+.half button { margin-left: 4px; padding: 2px 8px; }
+
+.actions { margin-top: 12px; }
+
+.actions button { width: 100%; margin-top: 6px; }

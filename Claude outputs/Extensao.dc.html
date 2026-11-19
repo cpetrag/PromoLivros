@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Extensão — captura Natura</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#0B6B5A}a:hover{color:#07493D}
+button{font-family:inherit;cursor:pointer}
+input,select{font-family:inherit;font-size:14px;color:#1D1C1A;background:#FFFFFF;border:1px solid #CFCABE;border-radius:8px;padding:8px 10px;box-sizing:border-box;width:100%}
+input:focus,select:focus{outline:2px solid #0B6B5A;outline-offset:1px}
+</style>
+</helmet>
+<div style="width: 420px; height: 980px; box-sizing: border-box; font-family: 'IBM Plex Sans', system-ui, sans-serif; color: #1D1C1A; background: #F4F2EC; display: flex; flex-direction: column">
+<div style="padding: 16px 18px; background: #1D1C1A; color: #F4F2EC; display: flex; flex-direction: column; gap: 4px">
+<strong style="font-size: 16px">Gestor Natura · Captura</strong>
+<span style="font-size: 12px; color: #B9B4A8; font-family: 'IBM Plex Mono', monospace">busca: “promoção da semana” · minhaloja.natura.com</span>
+</div>
+
+<div style="padding: 14px 18px; display: flex; flex-direction: column; gap: 10px; border-bottom: 1px solid #E2DED4; background: #FBFAF6">
+<div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px">
+<label style="display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600">Início<input type="text" value="10:30"></label>
+<label style="display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600">Intervalo<select onChange="{{setIv}}"><option value="25">25 min</option><option value="20">20 min</option><option value="30">30 min</option></select></label>
+<label style="display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600">Consultoria<input type="text" value="pechincheiro"></label>
+</div>
+<div style="display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 8px">
+<label style="display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600">Máx. por post<select onChange="{{setMax}}"><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="1">1 (sem casar)</option></select></label>
+<label style="display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600">Regra de marcas<select onChange="{{setRule}}"><option value="livre">Livre</option><option value="misto">1 Natura + 1 Avon</option><option value="mesma">Mesma marca</option></select></label>
+</div>
+<div style="font-size: 12px; color: #5F5B53">O preço vai sem o cupom. Texto, cupom e imagem final são feitos no painel.</div>
+</div>
+
+<div style="padding: 12px 18px 6px; display: flex; justify-content: space-between; align-items: center">
+<strong style="font-size: 14px">Encontrados nesta página ({{found}})</strong>
+<button type="button" onClick="{{toggleAll}}" style="padding: 6px 10px; background: #FFFFFF; border: 1px solid #CFCABE; border-radius: 6px; font-size: 12px; color: #1D1C1A">{{allLabel}}</button>
+</div>
+<div style="flex: 1; min-height: 0; overflow-y: auto; padding: 0 18px 8px; display: flex; flex-direction: column; gap: 0">
+<sc-for list="{{products}}" as="p" hint-placeholder-count="7">
+<div style="display: flex; flex-direction: column">
+<label style="{{p.style}}">
+<input type="checkbox" checked="{{p.on}}" onChange="{{p.toggle}}" style="width: 18px; height: 18px; accent-color: #0B6B5A">
+<div style="{{p.thumb}}">{{p.th}}</div>
+<span style="display: flex; flex-direction: column; gap: 2px; min-width: 0">
+<span style="font-size: 13px; font-weight: 600; line-height: 1.3">{{p.name}}</span>
+<span style="font-size: 12px; color: #5F5B53">{{p.brand}} · <span style="text-decoration: line-through">{{p.de}}</span> → {{p.por}}</span>
+</span>
+<span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; color: #0B4F43; text-align: right">{{p.time}}</span>
+</label>
+<div style="{{p.linkRow}}">
+<button type="button" onClick="{{p.toggleCasar}}" aria-pressed="{{p.casarOn}}" disabled="{{p.casarDisabled}}" style="{{p.casarStyle}}">
+<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"></path><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"></path></svg>
+{{p.casarLabel}}</button>
+<span style="{{p.warnStyle}}">{{p.warn}}</span>
+</div>
+</div>
+</sc-for>
+</div>
+
+<div style="padding: 12px 18px; display: flex; flex-direction: column; gap: 8px; border-top: 1px solid #E2DED4; background: #FBFAF6">
+<span style="font-size: 12px; font-weight: 600">Inserir promoção fixa</span>
+<div style="display: grid; grid-template-columns: minmax(0, 1fr) 90px auto; gap: 8px">
+<select aria-label="Promoção fixa"><option>Leve 3, ganhe 30% + cupom</option><option>Semana Ekos</option></select>
+<select aria-label="Depois do post"><option>após 3º post</option><option>após 6º post</option></select>
+<button type="button" onClick="{{addFixa}}" style="padding: 8px 12px; background: #FFFFFF; border: 1px solid #CFCABE; border-radius: 8px; font-size: 13px; color: #1D1C1A">Inserir</button>
+</div>
+<sc-if value="{{hasFixa}}" hint-placeholder-val="{{ false }}">
+<span style="font-size: 12px; color: #0B4F43">Fixa “Leve 3, ganhe 30% + cupom” entra às {{fixaTime}}.</span>
+</sc-if>
+</div>
+
+<div style="padding: 14px 18px 18px; display: flex; flex-direction: column; gap: 8px; background: #FFFFFF; border-top: 1px solid #E2DED4">
+<div style="display: flex; justify-content: space-between; font-size: 13px">
+<span>{{posts}} posts · {{rows}} linhas · {{firstTime}} → {{lastTime}}</span>
+<span style="color: #5F5B53; font-family: 'IBM Plex Mono', monospace">a cada {{iv}} min</span>
+</div>
+<button type="button" style="display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 12px; background: #0B6B5A; color: #FFFFFF; border: 0; border-radius: 8px; font-size: 14px; font-weight: 600">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+Exportar CSV</button>
+<span style="font-size: 11px; color: #5F5B53; font-family: 'IBM Plex Mono', monospace">fila-natura-2026-10-04.csv · ; · UTF-8 BOM · coluna post agrupa os casados</span>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":420,"height":980}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { off: {}, casar: { 1: true }, iv: 25, max: 2, rule: 'livre', fixa: false };
+  }
+  renderVals() {
+    const st = this.state;
+    const list = [
+      ['Ekos Polpa Hidratante Castanha 400 ml', 'Natura', 'R$ 99,90', 'R$ 59,90', '#7A4B2A', 'EK'],
+      ['Humor Próprio Colônia Feminino 75 ml', 'Natura', 'R$ 149,90', 'R$ 104,90', '#B5523B', 'HU'],
+      ['Far Away Deo Colônia 50 ml', 'Avon', 'R$ 129,90', 'R$ 64,90', '#6B3E75', 'FA'],
+      ['Kaiak Clássico Colônia Masculino 100 ml', 'Natura', 'R$ 189,90', 'R$ 142,40', '#2F5D7C', 'KA'],
+      ['Avon Care Creme para Mãos 75 g', 'Avon', 'R$ 24,90', 'R$ 14,90', '#9A5B8C', 'AC'],
+      ['Tododia Creme Corporal Ameixa 400 ml', 'Natura', 'R$ 74,90', 'R$ 44,90', '#7B3F6B', 'TD'],
+      ['Renew Sérum Facial 30 ml', 'Avon', 'R$ 139,90', 'R$ 83,90', '#4E4A6E', 'RE']
+    ];
+    const toMin = (t) => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
+    const fmt = (m) => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
+    const start = toMin('10:30');
+    const onIdx = list.map((_, i) => i).filter((i) => !st.off[i]);
+    // agrupa: item casado vai junto com o próximo marcado, até o máximo por post
+    const groups = [];
+    let cur = [];
+    onIdx.forEach((i) => {
+      cur.push(i);
+      const wantsNext = st.max > 1 && st.casar[i] && cur.length < st.max;
+      if (!wantsNext) { groups.push(cur); cur = []; }
+    });
+    if (cur.length) groups.push(cur);
+    let slot = 0, fixaTime = '';
+    const timeOf = {}, groupOf = {};
+    groups.forEach((g, gi) => {
+      if (st.fixa && gi === 3) { fixaTime = fmt(start + slot * st.iv); slot++; }
+      g.forEach((i) => { timeOf[i] = fmt(start + slot * st.iv); groupOf[i] = g; });
+      slot++;
+    });
+    if (st.fixa && !fixaTime) { fixaTime = fmt(start + slot * st.iv); slot++; }
+    const ruleBreak = (g) => {
+      if (g.length < 2) return '';
+      const brands = g.map((i) => list[i][1]);
+      if (st.rule === 'misto' && !(brands.includes('Natura') && brands.includes('Avon'))) return 'regra: 1 Natura + 1 Avon';
+      if (st.rule === 'mesma' && new Set(brands).size > 1) return 'regra: mesma marca';
+      return '';
+    };
+    const products = list.map((p, i) => {
+      const on = !st.off[i];
+      const g = groupOf[i] || [];
+      const inGroup = on && g.length > 1;
+      const isLastOfGroup = g[g.length - 1] === i;
+      const casarOn = !!st.casar[i] && on && !isLastOfGroup;
+      const full = g.length >= st.max && isLastOfGroup;
+      const warn = inGroup && g[0] === i ? ruleBreak(g) : '';
+      return {
+        name: p[0], brand: p[1], de: p[2], por: p[3], th: p[5], on, time: on ? timeOf[i] : '—',
+        thumb: 'width: 40px; height: 40px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; color: #FFFFFF; font-family: IBM Plex Mono, monospace; background: ' + p[4],
+        toggle: () => this.setState({ off: Object.assign({}, st.off, { [i]: on }) }),
+        style: 'display: grid; grid-template-columns: 20px 40px minmax(0, 1fr) 44px; gap: 10px; align-items: center; padding: 10px; border-radius: 8px; ' + (on ? (inGroup ? 'background: #FFFFFF; border: 1.5px solid #0B6B5A' : 'background: #FFFFFF; border: 1px solid #A9CFC4') : 'background: #FBFAF6; border: 1px solid #E2DED4; opacity: 0.7'),
+        linkRow: 'display: flex; align-items: center; gap: 8px; padding: 4px 0 8px 30px; ' + (casarOn ? 'border-left: 2px solid #0B6B5A; margin-left: 19px; padding-left: 10px;' : ''),
+        casarOn: casarOn ? 'true' : 'false',
+        casarDisabled: !on || st.max < 2 || full,
+        casarLabel: casarOn ? 'Casado com o próximo' : (full ? 'Post cheio (máx. ' + st.max + ')' : 'Casar com o próximo'),
+        toggleCasar: () => this.setState({ casar: Object.assign({}, st.casar, { [i]: !st.casar[i] }) }),
+        casarStyle: 'display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; ' + (casarOn ? 'background: #0B6B5A; color: #FFFFFF; border: 1px solid #0B6B5A' : 'background: transparent; color: #5F5B53; border: 1px dashed #B5AFA2'),
+        warn, warnStyle: warn ? 'font-size: 11px; font-weight: 600; color: #8A1F16' : 'display: none'
+      };
+    });
+    const rows = onIdx.length + (st.fixa ? 1 : 0);
+    const allOn = list.every((_, i) => !st.off[i]);
+    return {
+      products, found: list.length, iv: st.iv, rows, posts: slot,
+      firstTime: slot ? fmt(start) : '—', lastTime: slot ? fmt(start + (slot - 1) * st.iv) : '—',
+      allLabel: allOn ? 'Desmarcar todos' : 'Marcar todos',
+      toggleAll: () => { const off = {}; if (allOn) list.forEach((_, i) => { off[i] = true; }); this.setState({ off }); },
+      setIv: (e) => this.setState({ iv: Number(e.target.value) }),
+      setMax: (e) => this.setState({ max: Number(e.target.value) }),
+      setRule: (e) => this.setState({ rule: e.target.value }),
+      addFixa: () => this.setState({ fixa: true }), hasFixa: st.fixa, fixaTime
+    };
+  }
+}
+</script>
+</body>
+</html>

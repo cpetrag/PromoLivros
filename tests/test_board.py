@@ -6,6 +6,7 @@ from pathlib import Path
 from PIL import Image
 
 from promo_livros.board_store import BoardBook, BoardStore
+from promo_livros.fila_horarios import Limites, empurrar, trocar
 from promo_livros.post_card import render_card
 from promo_livros.post_copy import blurb_for, product_coupon, render_caption
 
@@ -57,12 +58,36 @@ class CopyTests(unittest.TestCase):
             ),
         )
 
-    def test_caption_cuts_the_subject_at_twelve_words(self) -> None:
+    def test_caption_keeps_a_twenty_word_review_whole(self) -> None:
+        review = (
+            "Obra de Adriana Farias da Silva que explora como o canabidiol pode "
+            "aliviar sintomas da Doença de Parkinson."
+        )
+        caption = render_caption(
+            [
+                {
+                    "title": "Cannabis Medicinal",
+                    "blurb": review,
+                    "price_cents": 2993,
+                    "list_price_cents": None,
+                    "discount_pct": None,
+                    "lowest_label": "",
+                    "coupon": "",
+                    "url": "https://example.com/cannabis",
+                }
+            ]
+        )
+        self.assertIn(f"ℹ️ _{review}_", caption)
+
+    def test_caption_cuts_a_runaway_review_at_the_word_cap(self) -> None:
+        from promo_livros.post_copy import MAX_BLURB_WORDS
+
+        words = [f"palavra{index}" for index in range(1, MAX_BLURB_WORDS + 2)]
         caption = render_caption(
             [
                 {
                     "title": "Gildo",
-                    "blurb": "um dois três quatro cinco seis sete oito nove dez onze doze treze",
+                    "blurb": " ".join(words),
                     "price_cents": 1990,
                     "list_price_cents": None,
                     "discount_pct": None,
@@ -72,8 +97,8 @@ class CopyTests(unittest.TestCase):
                 }
             ]
         )
-        self.assertIn("ℹ️ _um dois três quatro cinco seis sete oito nove dez onze doze._", caption)
-        self.assertNotIn("treze", caption)
+        self.assertIn(f"ℹ️ _{' '.join(words[:MAX_BLURB_WORDS])}._", caption)
+        self.assertNotIn(words[-1], caption)
         self.assertIn("💲 R$ 19,90", caption)
         self.assertNotIn("De R$", caption)
         self.assertIn("https://link.amazon/B01bzXpmN", caption)
@@ -163,6 +188,30 @@ class BoardTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_sent_posts_stay_saved_with_price(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            store = BoardStore(Path(folder) / "board.sqlite")
+            try:
+                old = _add_on(store, "2026-09-01", "08:00", "Velho")
+                store.mark_sent(old)
+                recent = _add_on(store, "2026-09-30", "08:00", "Recente")
+                store.mark_sent(recent)
+                today = _add_on(store, "2026-10-03", "09:00", "Hoje")
+                store.mark_sent(today)
+                self.assertEqual(
+                    [post.title for post in store.sent_feed()],
+                    ["Hoje", "Recente", "Velho"],
+                )
+                price = store._connection.execute(
+                    "SELECT price_cents FROM scheduled_books WHERE post_id = ?",
+                    (old,),
+                ).fetchone()
+                self.assertEqual(price["price_cents"], 1000)
+                lines = store.sent_lines()
+                self.assertEqual([line.title for line in lines], ["Hoje", "Recente", "Velho"])
+            finally:
+                store.close()
+
     def test_pause_until_blocks_sending_and_then_releases(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             store = BoardStore(Path(folder) / "board.sqlite")
@@ -184,6 +233,81 @@ class BoardTests(unittest.TestCase):
             self.assertTrue(destination.is_file())
             with Image.open(destination) as image:
                 self.assertEqual(image.format, "JPEG")
+
+
+class QueueClockTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.folder = tempfile.TemporaryDirectory()
+        self.store = BoardStore(Path(self.folder.name) / "board.sqlite")
+        self.first = _add(self.store, "10:00", "Um")
+        self.second = _add(self.store, "10:40", "Dois")
+        self.third = _add(self.store, "11:20", "Três")
+        self.limites = Limites(agora="09:00", fim="22:00")
+
+    def tearDown(self) -> None:
+        self.store.close()
+        self.folder.cleanup()
+
+    def test_apply_grava_os_horarios_e_a_ordem(self) -> None:
+        result = self.store.apply_clocks(
+            "2026-09-28", lambda fila: trocar(fila, self.first, self.third, self.limites), now_ts=1000.0
+        )
+        self.assertTrue(result.ok)
+        posts = self.store.posts_for("2026-09-28")
+        self.assertEqual([(post.caption, post.clock) for post in posts], [("Três", "10:00"), ("Dois", "10:40"), ("Um", "11:20")])
+        self.assertEqual([post.position for post in posts], [1, 2, 3])
+
+    def test_recusa_nao_grava(self) -> None:
+        result = self.store.apply_clocks(
+            "2026-09-28", lambda fila: empurrar(fila, self.first, -60, self.limites), now_ts=1000.0
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual([post.clock for post in self.store.posts_for("2026-09-28")], ["10:00", "10:40", "11:20"])
+
+    def test_post_enviado_no_meio_e_recusado(self) -> None:
+        def change(fila):
+            self.store._connection.execute("UPDATE scheduled_posts SET status = 'sent' WHERE id = ?", (self.third,))
+            return trocar(fila, self.first, self.third, self.limites)
+
+        result = self.store.apply_clocks("2026-09-28", change, now_ts=1000.0)
+        self.assertIn("acabou de sair", result.erro)
+
+    def test_desfazer_volta_e_vence(self) -> None:
+        self.store.apply_clocks(
+            "2026-09-28", lambda fila: empurrar(fila, self.first, 20, self.limites), now_ts=1000.0
+        )
+        self.assertEqual(self.store.restore_clocks("2026-09-28", now_ts=1100.0), "Os horários voltaram.")
+        self.assertEqual([post.clock for post in self.store.posts_for("2026-09-28")], ["10:00", "10:40", "11:20"])
+        self.store.apply_clocks(
+            "2026-09-28", lambda fila: empurrar(fila, self.first, 20, self.limites), now_ts=1000.0
+        )
+        self.assertEqual(self.store.restore_clocks("2026-09-28", now_ts=1000.0 + 601), "O prazo de desfazer acabou.")
+
+    def test_estender_o_fim_grava_o_ultimo_horario_mais_um_minuto(self) -> None:
+        limites = Limites(agora="09:00", fim="11:00", permitir_fora=True)
+        result = self.store.apply_clocks(
+            "2026-09-28",
+            lambda fila: empurrar(fila, self.second, 20, limites),
+            extend_end=True,
+            now_ts=1000.0,
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(self.store.send_end_for("2026-09-28", "11:00"), "11:41")
+
+    def test_feed_traz_todos_os_livros_do_post(self) -> None:
+        self.store.add_post(
+            day="2026-09-28",
+            clock="12:00",
+            caption="Par",
+            image_path="",
+            books=[
+                BoardBook("Amazon", "", 1000, 2000, 50, "", "https://www.amazon.com.br/dp/857412320X", "", product_id="857412320X"),
+                BoardBook("Shopee", "", 900, 1800, 50, "", "https://s.shopee.com.br/abc", "", product_id="123456.7890123"),
+            ],
+        )
+        feed = [post for post in self.store.day_feed("2026-09-28") if post.caption == "Par"][0]
+        self.assertEqual([book.title for book in feed.shelf], ["Amazon", "Shopee"])
+        self.assertEqual(feed.shelf[1].product_id, "123456.7890123")
 
 
 def _add(store: BoardStore, clock: str, title: str) -> int:

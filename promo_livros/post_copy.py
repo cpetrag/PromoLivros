@@ -5,7 +5,9 @@ import re
 
 from promo_livros.formatter import format_brl
 from promo_livros.ml_links import is_ml_url
+from promo_livros.shopee_links import is_shopee_url
 
+MAX_BLURB_WORDS = 40
 _SENTENCE = re.compile(r".+?[.!?](?:\s|$)")
 _WORD = re.compile(r"\w{4,}", re.UNICODE)
 _GENERIC_COUPON = (
@@ -109,11 +111,14 @@ def signature_of(caption: str) -> str | None:
 
 def render_caption(books: list[dict], *, sign_index: int = 0, signature: str | None = None) -> str:
     expanded = [block for book in books for block in _expand(book)]
-    label_amazon = any(is_ml_url(str(book.get("url") or "")) for book in expanded)
+    label_amazon = any(
+        is_ml_url(str(book.get("url") or "")) or is_shopee_url(str(book.get("url") or ""))
+        for book in expanded
+    ) or len(expanded) > 1
     blocks = []
     for book in expanded:
         lines = [f"📖 *{_plain(book['title'])}*"]
-        blurb = _twelve_words(_plain(book.get("blurb") or ""))
+        blurb = _cap_words(_plain(book.get("blurb") or ""))
         if blurb:
             lines.append(f"ℹ️ _{blurb}_")
         lines.append(
@@ -164,6 +169,8 @@ def _link_lines(book: dict, *, label_amazon: bool) -> list[str]:
     url = str(book.get("url") or "")
     if is_ml_url(url):
         return [f"🔗 Mercado Livre: {url}"]
+    if is_shopee_url(url):
+        return [f"🔗 Shopee: {url}"]
     if label_amazon:
         return [f"🔗 Amazon: {url}"]
     return [f"🔗 {url}"]
@@ -173,11 +180,12 @@ def _plain(value: str) -> str:
     return value.replace("*", "").replace("_", " ").strip()
 
 
-def _twelve_words(text: str) -> str:
+def _cap_words(text: str) -> str:
+    """A resenha já vem no tamanho que o prompt pediu. O teto só segura texto descontrolado."""
     words = text.split()
-    if len(words) <= 12:
+    if len(words) <= MAX_BLURB_WORDS:
         return text
-    trimmed = " ".join(words[:12]).rstrip(".,;:")
+    trimmed = " ".join(words[:MAX_BLURB_WORDS]).rstrip(".,;:")
     return f"{trimmed}."
 
 

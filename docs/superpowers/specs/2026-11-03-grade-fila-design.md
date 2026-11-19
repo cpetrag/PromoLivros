@@ -54,6 +54,8 @@ Na grade, cada post agendado é uma linha:
   3. **Cancelar**.
 
   O botão 1 só aparece quando o intervalo calculado é de pelo menos 5 minutos.
+- O envio só dispara post com horário antes do fim (`clock < end`). Quando o botão 2 é usado, o servidor grava em `board_settings` a chave `send_end_extra:<dia>` com o último horário + 1 minuto. `board_send` passa a usar o maior entre o fim da regra e essa extensão do dia. A extensão vale só para aquele dia.
+- "Fora da janela" é horário igual ou depois do fim (`clock >= end`), igual à regra do envio.
 - Horário depois de 23:59 nunca é aceito, nem com confirmação.
 
 ## Servidor
