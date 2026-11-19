@@ -7,7 +7,10 @@ from html import escape
 
 from promo_livros.dashboard_grid import GRID_DIALOGS, render_grid
 from promo_livros.formatter import format_brl
+from promo_livros.lojas import STORE_ORDER, store_of
 from promo_livros.send_schedule import slot_clocks, upcoming_clocks
+
+_STORE_NAMES = {"amazon": "Amazon", "ml": "Mercado Livre", "shopee": "Shopee", "magalu": "Magazine Luiza"}
 
 _MONTHS = (
     "janeiro",
@@ -492,7 +495,10 @@ def _rows(
     scheduled = [post for post in rest if post.status == "scheduled"]
     others = [post for post in rest if post.status != "scheduled"]
     scheduled_ids = [post.id for post in scheduled]
-    blocks = [_row(post, groups, scheduled_ids, now_clock, whatsapp) for post in sent]
+    blocks = []
+    if chosen in {"todas", "fila"}:
+        blocks.append(_stores_summary([post for post in posts if _aba_keeps("fila", post, now_clock)]))
+    blocks.extend(_row(post, groups, scheduled_ids, now_clock, whatsapp) for post in sent)
     if sent and rest:
         stamp = f" {escape(now_clock)}" if now_clock else ""
         blocks.append(f'<div class="now-line" role="separator"><span>agora{stamp}</span></div>')
@@ -532,9 +538,12 @@ def _row(
         <time>{escape(_when_label(post))}</time>
         <span>{escape(_clock_status(post, now_clock, whatsapp))}</span>
       </div>
-      <button type="button" class="thumb-btn js-light" data-src="/cards/{post.id}.jpg" aria-label="Ampliar capa de {escape(title)}">
-        <img class="thumb" alt="" width="64" height="90" src="/cards/{post.id}.jpg">
-      </button>
+      <div class="media">
+        <button type="button" class="thumb-btn js-light" data-src="/cards/{post.id}.jpg" aria-label="Ampliar capa de {escape(title)}">
+          <img class="thumb" alt="" width="64" height="90" src="/cards/{post.id}.jpg">
+        </button>
+        {_store_logos(post)}
+      </div>
       <div class="copy">
         <h2>{escape(title)}</h2>
         {synopsis}
@@ -547,6 +556,42 @@ def _row(
       {_steps(post)}
     </article>
     """
+
+
+def _post_stores(post) -> list[str]:
+    books = getattr(post, "shelf", ()) or (post,)
+    found = {store_of(book) for book in books}
+    return sorted(found, key=lambda store: STORE_ORDER.get(store, 9))
+
+
+def _store_logo(store: str, css: str) -> str:
+    label = _STORE_NAMES.get(store, store)
+    return f'<img class="{css}" src="/lojas/{escape(store)}.png" alt="{escape(label)}" title="{escape(label)}" loading="lazy">'
+
+
+def _store_logos(post) -> str:
+    marks = "".join(_store_logo(store, "store-logo") for store in _post_stores(post))
+    return f'<div class="store-logos">{marks}</div>' if marks else ""
+
+
+def _stores_summary(posts: list) -> str:
+    """Quantos posts que ainda vão sair levam cada loja. Post com duas lojas conta nas duas."""
+    counts: dict[str, int] = {}
+    for post in posts:
+        for store in _post_stores(post):
+            counts[store] = counts.get(store, 0) + 1
+    if not counts:
+        return ""
+    items = "".join(
+        f'<li>{_store_logo(store, "store-logo")}<b>{count}</b></li>'
+        for store, count in sorted(counts.items(), key=lambda item: STORE_ORDER.get(item[0], 9))
+    )
+    total = len(posts)
+    return (
+        '<section class="stores-summary" aria-label="Posts na fila por loja">'
+        f'<span>{total} {_plural(total, "post ainda vai sair", "posts ainda vão sair")}:</span>'
+        f"<ul>{items}</ul></section>"
+    )
 
 
 def _when_label(post) -> str:
@@ -1119,6 +1164,14 @@ BELT_CSS = """
   min-height: 40px; overflow: hidden;
 }
 .thumb { width: 64px; height: 90px; object-fit: cover; display: block; border-radius: 8px; }
+.media { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.store-logos { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.store-logo { display: block; max-width: 56px; max-height: 18px; width: auto; height: auto; }
+.stores-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin: 0 0 10px; padding: 8px 12px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px; color: var(--muted); font-size: 0.88rem; }
+.stores-summary ul { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 0; padding: 0; list-style: none; }
+.stores-summary li { display: flex; align-items: center; gap: 6px; }
+.stores-summary b { color: var(--ink); font-variant-numeric: tabular-nums; font-size: 1rem; }
 .belt .copy h2 { font-size: 1rem; margin: 0; }
 .synopsis { margin: 2px 0 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .price-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-weight: 600; margin: 0 0 4px; }

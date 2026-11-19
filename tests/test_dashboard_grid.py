@@ -24,6 +24,32 @@ MAGALU = FeedBook(
 )
 
 
+class ListStoreLogosTests(unittest.TestCase):
+    def test_each_post_shows_the_logos_of_its_stores(self):
+        from promo_livros.dashboard_belt import _row
+
+        html = _row(_post(7, "13:40", shelf=(AMAZON, MAGALU)), (), [7])
+        self.assertIn('src="/lojas/amazon.png"', html)
+        self.assertIn('src="/lojas/magalu.png"', html)
+        self.assertNotIn('src="/lojas/ml.png"', html)
+        self.assertLess(html.index("/cards/7.jpg"), html.index("/lojas/amazon.png"))
+
+    def test_summary_counts_posts_still_to_go_per_store(self):
+        from promo_livros.dashboard_belt import _stores_summary
+
+        posts = [
+            _post(1, "13:40", shelf=(AMAZON, MAGALU)),
+            _post(2, "14:00", shelf=(AMAZON, ML)),
+            _post(3, "14:30", shelf=(AMAZON,)),
+        ]
+        html = _stores_summary(posts)
+        self.assertIn("3 posts ainda vão sair", html)
+        self.assertRegex(html, r'amazon\.png"[^>]*><b>3</b>')
+        self.assertRegex(html, r'ml\.png"[^>]*><b>1</b>')
+        self.assertRegex(html, r'magalu\.png"[^>]*><b>1</b>')
+        self.assertEqual(_stores_summary([]), "")
+
+
 class StoreOfTests(unittest.TestCase):
     def test_detects_each_store(self):
         self.assertEqual(store_of(AMAZON), "amazon")

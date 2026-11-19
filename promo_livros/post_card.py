@@ -1,11 +1,17 @@
 """Card do post: capas originais, logos de loja opcionais sob cada capa, logo no canto."""
 from __future__ import annotations
 
+import logging
+import time
+from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import requests
 from PIL import Image
+
+logger = logging.getLogger(__name__)
 
 _LOGO = Path(__file__).resolve().parent / "assets" / "black_livros.jpg"
 _BEIGE = (245, 241, 232, 255)
@@ -24,8 +30,26 @@ _STORE_GAP = 10
 _STORE_STRIP = _STORE_GAP + 56 + _MAGALU_EXTRA_DOWN
 
 
-def download_image(url: str, timeout: float = 20) -> Image.Image:
-    response = requests.get(url, timeout=timeout, headers={"User-Agent": "promo-livros/1.0"})
+_RETRY_STATUS = {403, 429, 500, 502, 503, 504}
+_RETRY_DELAYS = (1.0, 3.0)
+# O CDN da Magalu recusa rajadas sem Referer da loja com 403 intermitente.
+_REFERERS = {"mlcdn.com.br": "https://www.magazineluiza.com.br/"}
+
+
+def download_image(url: str, timeout: float = 20, *, sleep=time.sleep, get=requests.get) -> Image.Image:
+    headers = {"User-Agent": "promo-livros/1.0"}
+    host = (urlsplit(url).hostname or "").lower()
+    referer = next((value for marker, value in _REFERERS.items() if host.endswith(marker)), "")
+    if referer:
+        headers["Referer"] = referer
+    for attempt, delay in enumerate(_RETRY_DELAYS, start=1):
+        response = get(url, timeout=timeout, headers=headers)
+        if response.status_code not in _RETRY_STATUS:
+            break
+        logger.info("Capa recusada (%s) na tentativa %s: %s", response.status_code, attempt, host)
+        sleep(delay)
+    else:
+        response = get(url, timeout=timeout, headers=headers)
     response.raise_for_status()
     return Image.open(BytesIO(response.content)).convert("RGB")
 
@@ -48,6 +72,17 @@ def _prepare_store_logo(path: Path, max_w: int, *, store: str) -> Image.Image:
         source = source.crop(box)
     source.thumbnail((max_w, max_w), Image.Resampling.LANCZOS)
     return source
+
+
+@lru_cache(maxsize=len(_STORE_LOGOS))
+def store_logo_png(store: str, width: int = 120) -> bytes | None:
+    """Logo da loja já recortada e com fundo transparente, para o painel."""
+    path = _STORE_LOGOS.get(store)
+    if path is None or not path.is_file():
+        return None
+    buffer = BytesIO()
+    _prepare_store_logo(path, max_w=width, store=store).save(buffer, "PNG", optimize=True)
+    return buffer.getvalue()
 
 
 def _store_marks(fitted: list[Image.Image], stores: list[str]) -> list[Image.Image | None]:

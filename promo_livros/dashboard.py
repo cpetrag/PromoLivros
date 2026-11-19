@@ -146,6 +146,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not self._logged_in():
             self._html(login_page(failed=False))
             return
+        store_logo = re.fullmatch(r"/lojas/(amazon|ml|shopee|magalu)\.png", path)
+        if store_logo:
+            self._store_logo(store_logo.group(1))
+            return
         if path == "/whatsapp":
             self._html(_whatsapp_page(self.app))
             return
@@ -596,6 +600,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "image/jpeg")
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _store_logo(self, store: str) -> None:
+        from promo_livros.post_card import store_logo_png
+
+        payload = store_logo_png(store)
+        if payload is None:
+            self.send_error(404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Cache-Control", "private, max-age=86400")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)

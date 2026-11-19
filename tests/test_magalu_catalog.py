@@ -157,6 +157,21 @@ class LojasMagaluTests(unittest.TestCase):
         )
         self.assertEqual(store_of(book), "magalu")
 
+    def test_store_of_magalu_depois_do_encurtador_aqui(self):
+        """O post guarda o link curto do Aqui; o código Magalu não tem formato de ASIN."""
+        short = SimpleNamespace(product_id="088682900", url="https://aqui.descontos.ai/9tk2bc")
+        self.assertEqual(store_of(short), "magalu")
+        unshortened = SimpleNamespace(product_id="226472300", url="")
+        self.assertEqual(store_of(unshortened), "magalu")
+
+    def test_store_of_amazon_continua_amazon(self):
+        for book in (
+            SimpleNamespace(product_id="859520294X", url="https://www.amazon.com.br/dp/859520294X"),
+            SimpleNamespace(product_id="", url="https://amzn.to/abc"),
+            SimpleNamespace(product_id="6588444311", url=""),
+        ):
+            self.assertEqual(store_of(book), "amazon")
+
 
 if __name__ == "__main__":
     unittest.main()

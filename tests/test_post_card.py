@@ -74,6 +74,48 @@ class RenderCardStoreLogosTests(unittest.TestCase):
             self.assertGreater(right_box[1], left_box[1])
 
 
+class DownloadImageTests(unittest.TestCase):
+    def _response(self, status: int):
+        from io import BytesIO
+        from types import SimpleNamespace
+
+        buffer = BytesIO()
+        Image.new("RGB", (10, 10), RED).save(buffer, "JPEG")
+
+        def raise_for_status():
+            if status >= 400:
+                raise OSError(str(status))
+
+        return SimpleNamespace(status_code=status, content=buffer.getvalue(), raise_for_status=raise_for_status)
+
+    def test_magalu_403_tries_again_with_the_store_referer(self):
+        from promo_livros.post_card import download_image
+
+        calls, waits = [], []
+        replies = [self._response(403), self._response(200)]
+
+        def get(url, timeout, headers):
+            calls.append(headers)
+            return replies.pop(0)
+
+        image = download_image("https://a-static.mlcdn.com.br/600x600/x/magazineluiza/1/a.jpg", get=get, sleep=waits.append)
+        self.assertEqual(image.size, (10, 10))
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(waits, [1.0])
+        self.assertEqual(calls[0]["Referer"], "https://www.magazineluiza.com.br/")
+
+    def test_gives_up_after_the_last_attempt(self):
+        from promo_livros.post_card import download_image
+
+        def get(url, timeout, headers):
+            return self._response(403)
+
+        waits = []
+        with self.assertRaises(OSError):
+            download_image("https://m.media-amazon.com/images/P/x.jpg", get=get, sleep=waits.append)
+        self.assertEqual(waits, [1.0, 3.0])
+
+
 class RenderCardSmallCoverTests(unittest.TestCase):
     def test_small_cover_is_enlarged_to_match_the_others(self):
         """Miniatura de 70 px não pode virar um selo ao lado de uma capa de 280 px."""
