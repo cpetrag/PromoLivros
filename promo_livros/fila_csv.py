@@ -63,7 +63,7 @@ _FORMATOS_MAGALU = (
 
 
 def parse_fila_csv(text: str) -> list[dict]:
-    """Lê um horário por linha, com até duas lojas: Amazon, Mercado Livre e/ou Shopee."""
+    """Lê um horário por linha, com até duas lojas: Amazon, Mercado Livre, Magazine Luiza e/ou Shopee."""
     sample = text.lstrip("\ufeff").strip()
     if not sample:
         raise CatalogError("O CSV da fila está vazio.")
@@ -92,6 +92,11 @@ def parse_fila_csv(text: str) -> list[dict]:
                 magalu = segundo
             else:
                 mercado = segundo
+        magalu_proprio = _anuncio(row, "magalu", index, errors, avisos, rejeitados)
+        if magalu_proprio is not None:
+            if magalu is not None:
+                errors.append(f"Linha {index}: a Magazine Luiza veio nas colunas _ml e _magalu; use só uma.")
+            magalu = magalu_proprio
         shopee = _anuncio(row, "shopee", index, errors, avisos, rejeitados)
         extra = _segunda_oferta(row, index, errors, avisos, rejeitados)
         if (
@@ -687,7 +692,7 @@ def _anuncio(
     avisos: list[str],
     rejeitados: list[str],
 ) -> dict | None:
-    suffix = {"ml": "_ml", "shopee": "_shopee"}.get(loja, "")
+    suffix = {"ml": "_ml", "shopee": "_shopee", "magalu": "_magalu"}.get(loja, "")
     raw = row.get(f"asin{suffix}") or ("" if suffix else row.get(f"link{suffix}") or "")
     title = row.get(f"titulo{suffix}") or ""
     author = row.get(f"autor{suffix}") or ""
@@ -709,7 +714,7 @@ def _anuncio(
                 errors.append(f"Linha {linha}: falta o código ou o link da {_nome_loja(effective)}.")
         return None
     if effective == "magalu":
-        link_ok = _link_magalu(link, code, linha, avisos, rejeitados)
+        link_ok = _link_magalu(link, code, linha, avisos, rejeitados, campo=f"link{suffix}")
         if link_ok is None:
             return None
     elif loja == "ml":
@@ -844,7 +849,7 @@ def _link_magalu(
     rejeitados: list[str],
     campo: str = "link_ml",
 ) -> str | None:
-    """O endereço sai do link_ml. None pula a Magazine Luiza; código trocado recusa a linha."""
+    """O endereço sai do link_ml, link_magalu ou link_2. None pula a Magazine Luiza; código trocado recusa a linha."""
     original = raw.strip()
     if not original:
         avisos.append(f"Linha {linha}: {campo} inválido para {code}: . {_FORMATOS_MAGALU}")
@@ -858,7 +863,7 @@ def _link_magalu(
     if found:
         rejeitados.append(
             f"Linha {linha}: {campo} inválido para {code}: {original}. "
-            f"O código depois de /p/ precisa ser o do asin_ml. {_FORMATOS_MAGALU}"
+            f"O código depois de /p/ precisa ser o do {campo.replace('link', 'asin', 1)}. {_FORMATOS_MAGALU}"
         )
         return None
     avisos.append(f"Linha {linha}: {campo} inválido para {code}: {original}. {_FORMATOS_MAGALU}")

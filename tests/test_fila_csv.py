@@ -58,6 +58,36 @@ class FilaCsvTests(unittest.TestCase):
         self.assertEqual(magalu["url"], _MAGALU_LINK)
         self.assertEqual(rows[0]["amazon"]["asin"], "B000000001")
 
+    def test_colunas_magalu_proprias_viram_oferta_magalu(self) -> None:
+        link = "https://www.magazineluiza.com.br/livro-glee-o-inicio/p/088682900/li/lljl/"
+        image = "https://a-static.mlcdn.com.br/600x600/livro-glee-o-inicio/magazineluiza/088682900/354223.jpg"
+        text = (
+            f"{_HEADER};asin_magalu;titulo_magalu;preco_magalu;preco_de_magalu;"
+            "menor_preco_365_magalu;cupom_magalu;imagem_magalu;link_magalu\n"
+            "13:40;B000000001;Amazon;R$ 10,00;;nao;;;;;;;;;"
+            f"088682900;Livro - Glee: O início;R$ 9,89;R$ 49,90;nao;;{image};{link}\n"
+        )
+        rows = parse_fila_csv(text)
+        magalu = rows[0]["magalu"]
+        self.assertIsNotNone(magalu)
+        self.assertEqual(magalu["store"], "magalu")
+        self.assertEqual(magalu["asin"], "088682900")
+        self.assertEqual(magalu["price_cents"], 989)
+        self.assertEqual(magalu["url"], link)
+        self.assertEqual(magalu["image_url"], image)
+        self.assertIsNone(rows[0]["ml"])
+
+    def test_link_magalu_de_outro_produto_recusa_a_linha(self) -> None:
+        text = (
+            f"{_HEADER};asin_magalu;titulo_magalu;preco_magalu;preco_de_magalu;"
+            "menor_preco_365_magalu;cupom_magalu;imagem_magalu;link_magalu\n"
+            "13:40;B000000001;Amazon;R$ 10,00;;nao;;;;;;;;;"
+            "088682900;Glee;R$ 9,89;;nao;;;https://www.magazineluiza.com.br/outro/p/999999999/\n"
+        )
+        with self.assertRaises(CatalogError) as trocada:
+            parse_fila_csv(text)
+        self.assertIn("asin_magalu", str(trocada.exception))
+
     def test_colunas_ml_mercado_livre_continua_store_ml(self) -> None:
         rows = parse_fila_csv("\ufeff" + _FILA)
         mercado = rows[0]["ml"]
