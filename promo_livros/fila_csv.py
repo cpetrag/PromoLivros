@@ -12,6 +12,7 @@ from urllib.parse import unquote
 from promo_livros.catalog import CatalogBook, CatalogError, _ASIN, _ML_ID, _cents, ml_picture
 from promo_livros.fila import Bloqueado, FilaMontada, SlotFila, _CLOCK, _avisos, item_de_livro, produto_de_url
 from promo_livros.fila_aplicar import _enviados, _guardar_previa
+from promo_livros.magalu_links import is_magalu_url, magalu_product_id
 from promo_livros.ml_links import clean_product_url
 from promo_livros.shopee_links import SHOPEE_ID, is_shopee_url
 
@@ -55,6 +56,10 @@ _FORMATOS_SHOPEE = (
     "Formatos aceitos: https://shopee.com.br/nome-do-livro-i.123.456 "
     "ou https://shopee.com.br/product/123/456."
 )
+_FORMATOS_MAGALU = (
+    "Formatos aceitos: https://www.magazineluiza.com.br/livro/p/{codigo}/ "
+    "ou link Magazine Luiza com /p/{codigo}/."
+)
 
 
 def parse_fila_csv(text: str) -> list[dict]:
@@ -80,13 +85,20 @@ def parse_fila_csv(text: str) -> list[dict]:
         row = {_fold(key): (value or "").strip() for key, value in raw.items() if key}
         clock = row.get("horario") or ""
         amazon = _anuncio(row, "amazon", index, errors, avisos, rejeitados)
-        mercado = _anuncio(row, "ml", index, errors, avisos, rejeitados)
+        segundo = _anuncio(row, "ml", index, errors, avisos, rejeitados)
+        mercado = magalu = None
+        if segundo is not None:
+            if segundo.get("store") == "magalu":
+                magalu = segundo
+            else:
+                mercado = segundo
         shopee = _anuncio(row, "shopee", index, errors, avisos, rejeitados)
         extra = _segunda_oferta(row, index, errors, avisos, rejeitados)
         if (
             not clock
             and amazon is None
             and mercado is None
+            and magalu is None
             and shopee is None
             and extra is None
             and not _ja_reclamou(errors, index)
@@ -104,13 +116,15 @@ def parse_fila_csv(text: str) -> list[dict]:
             clocks[clock] = index
         if _ja_reclamou(rejeitados, index):
             continue
-        filled = [item for item in (amazon, mercado, shopee, extra) if item is not None]
+        filled = [item for item in (amazon, mercado, magalu, shopee, extra) if item is not None]
         if len(filled) > 2:
             errors.append(f"Linha {index}: o post aceita no máximo duas ofertas.")
             continue
         if not filled:
             if not _ja_reclamou(errors, index) and not _ja_reclamou(avisos, index):
-                errors.append(f"Linha {index}: falta o anúncio da Amazon, do Mercado Livre, ou da Shopee.")
+                errors.append(
+                    f"Linha {index}: falta o anúncio da Amazon, do Mercado Livre, da Magazine Luiza ou da Shopee."
+                )
             continue
         for item in filled:
             code = item["asin"]
@@ -119,7 +133,15 @@ def parse_fila_csv(text: str) -> list[dict]:
             else:
                 vistos[code] = index
         rows.append(
-            {"linha": str(index), "clock": clock, "amazon": amazon, "ml": mercado, "shopee": shopee, "extra": extra}
+            {
+                "linha": str(index),
+                "clock": clock,
+                "amazon": amazon,
+                "ml": mercado,
+                "magalu": magalu,
+                "shopee": shopee,
+                "extra": extra,
+            }
         )
         if len(rows) > _MAX_LINHAS:
             raise CatalogError(f"A fila aceita no máximo {_MAX_LINHAS} horários.")
@@ -158,7 +180,7 @@ def previa_do_csv(catalog, board, day: str, agora: str, fim: str, text: str, mem
             errors.append(f"Linha {numero}: {clock} fica fora da janela, que termina às {fim}.")
             continue
         ofertas = []
-        for bruto in (linha["amazon"], linha["ml"], linha["shopee"], linha.get("extra")):
+        for bruto in (linha["amazon"], linha["ml"], linha.get("magalu"), linha["shopee"], linha.get("extra")):
             book = _com_capa(catalog, _livro(bruto))
             if book is None:
                 continue
@@ -169,7 +191,7 @@ def previa_do_csv(catalog, board, day: str, agora: str, fim: str, text: str, mem
             ofertas.append(book)
         if not ofertas:
             continue
-        amazon, mercado, shopee, extra = _encaixar(ofertas)
+        amazon, mercado, shopee, magalu, extra = _encaixar(ofertas)
         for book in ofertas:
             livros.append(_publico(book))
         slots.append(
@@ -178,6 +200,7 @@ def previa_do_csv(catalog, board, day: str, agora: str, fim: str, text: str, mem
                 item_de_livro(amazon) if amazon is not None else None,
                 item_de_livro(mercado) if mercado is not None else None,
                 shopee=item_de_livro(shopee) if shopee is not None else None,
+                magalu=item_de_livro(magalu) if magalu is not None else None,
                 extra=item_de_livro(extra) if extra is not None else None,
             )
         )
@@ -209,7 +232,7 @@ def previa_do_csv(catalog, board, day: str, agora: str, fim: str, text: str, mem
 
 def _passos(livros: list[dict]) -> list[dict]:
     passos = []
-    nomes = {"ml": "do Mercado Livre", "shopee": "da Shopee"}
+    nomes = {"ml": "do Mercado Livre", "shopee": "da Shopee", "magalu": "da Magazine Luiza"}
     for book in livros:
         loja = nomes.get(book.get("store") or "", "da Amazon")
         titulo = book.get("title") or book.get("asin") or ""
@@ -279,6 +302,7 @@ def avancar(
     describe,
     gravar,
     resolve_shopee=None,
+    resolve_magalu=None,
 ) -> dict:
     """Executa o próximo passo. Link e resenha acontecem aqui; gravar troca a fila."""
     if job.done or job.error:
@@ -287,7 +311,7 @@ def avancar(
     step["state"] = "run"
     try:
         if step["kind"] == "link":
-            _converter(job.livros[step["asin"]], resolve_amazon, resolve_ml, resolve_shopee)
+            _converter(job.livros[step["asin"]], resolve_amazon, resolve_ml, resolve_shopee, resolve_magalu)
         elif step["kind"] == "resenha":
             book = job.livros[step["asin"]]
             try:
@@ -330,7 +354,14 @@ def avancar(
     return job.visao()
 
 
-def resolver_links(job: ImportacaoFila, *, resolve_amazon, resolve_ml, resolve_shopee=None) -> dict:
+def resolver_links(
+    job: ImportacaoFila,
+    *,
+    resolve_amazon,
+    resolve_ml,
+    resolve_shopee=None,
+    resolve_magalu=None,
+) -> dict:
     """Tenta de novo os anúncios cujo link de afiliado não saiu."""
     if job.done or job.error:
         return job.visao()
@@ -338,10 +369,10 @@ def resolver_links(job: ImportacaoFila, *, resolve_amazon, resolve_ml, resolve_s
         if step["kind"] != "link" or step["state"] != "erro":
             continue
         book = job.livros.get(step["asin"])
-        if book is None or book.get("store") not in {"ml", "shopee"}:
+        if book is None or book.get("store") not in {"ml", "shopee", "magalu"}:
             continue
         try:
-            _converter(book, resolve_amazon, resolve_ml, resolve_shopee)
+            _converter(book, resolve_amazon, resolve_ml, resolve_shopee, resolve_magalu)
         except LinkQuebrado as exc:
             step["detail"] = str(exc)
             book["link_erro"] = str(exc)
@@ -370,10 +401,18 @@ def _tirar_ignorados(job: ImportacaoFila) -> None:
         amazon = "" if slot.get("amazon") in ids else slot.get("amazon") or ""
         mercado = "" if slot.get("ml") in ids else slot.get("ml") or ""
         shopee = "" if slot.get("shopee") in ids else slot.get("shopee") or ""
+        magalu = "" if slot.get("magalu") in ids else slot.get("magalu") or ""
         extra = "" if slot.get("extra") in ids else slot.get("extra") or ""
-        if amazon or mercado or shopee or extra:
+        if amazon or mercado or shopee or magalu or extra:
             slots.append(
-                {"clock": slot["clock"], "amazon": amazon, "ml": mercado, "shopee": shopee, "extra": extra}
+                {
+                    "clock": slot["clock"],
+                    "amazon": amazon,
+                    "ml": mercado,
+                    "shopee": shopee,
+                    "magalu": magalu,
+                    "extra": extra,
+                }
             )
     job.slots_ids = slots
 
@@ -382,7 +421,7 @@ def _quebrados(job: ImportacaoFila) -> list[dict]:
     itens = []
     for book in job.livros.values():
         motivo = book.get("link_erro") or ""
-        if book.get("store") not in {"ml", "shopee"} or not motivo:
+        if book.get("store") not in {"ml", "shopee", "magalu"} or not motivo:
             continue
         itens.append(
             {
@@ -405,10 +444,17 @@ def _com_capa(catalog, book: CatalogBook | None) -> CatalogBook | None:
     return replace(book, image_url=stored)
 
 
-def _converter(book: dict, resolve_amazon, resolve_ml, resolve_shopee=None) -> None:
+def _converter(book: dict, resolve_amazon, resolve_ml, resolve_shopee=None, resolve_magalu=None) -> None:
     from promo_livros.ml_links import clean_product_url
 
-    chave = clean_product_url(book.get("url") or "") or book.get("url") or ""
+    raw = book.get("url") or ""
+    # Magalu precisa da query (seller_id). clean_product_url é só do ML.
+    if book.get("store") == "magalu":
+        chave = raw.strip()
+        book["url_chave"] = chave
+        _converter_magalu(book, chave, resolve_magalu)
+        return
+    chave = clean_product_url(raw) or raw
     book["url_chave"] = chave
     if book.get("store") == "ml":
         _converter_ml(book, chave, resolve_ml)
@@ -442,6 +488,23 @@ def _converter_ml(book: dict, chave: str, resolve_ml) -> None:
     final = got[0].strip() if isinstance(got, list) and len(got) == 1 and isinstance(got[0], str) else ""
     if not _virou_afiliado(final, chave):
         raise LinkQuebrado("O Mercado Livre não gerou o link de afiliado.")
+    book["url_final"] = final
+    book.pop("link_erro", None)
+
+
+def _converter_magalu(book: dict, chave: str, resolve_magalu) -> None:
+    if resolve_magalu is None or not chave:
+        raise LinkQuebrado("Falta o link da Magazine Luiza.")
+    try:
+        got = resolve_magalu([chave])
+    except LinkQuebrado:
+        raise
+    except Exception as exc:
+        texto = " ".join(str(exc).split())
+        raise LinkQuebrado(texto[:180] or "A Magazine Luiza não gerou o link de afiliado.") from exc
+    final = got[0].strip() if isinstance(got, list) and len(got) == 1 and isinstance(got[0], str) else ""
+    if not final.startswith("https://"):
+        raise LinkQuebrado("A Magazine Luiza não gerou o link de afiliado.")
     book["url_final"] = final
     book.pop("link_erro", None)
 
@@ -511,9 +574,11 @@ class _Lidas(list):
         self.rejeitados = rejeitados
 
 
-def _encaixar(ofertas: list[CatalogBook]) -> tuple[CatalogBook | None, CatalogBook | None, CatalogBook | None, CatalogBook | None]:
+def _encaixar(
+    ofertas: list[CatalogBook],
+) -> tuple[CatalogBook | None, CatalogBook | None, CatalogBook | None, CatalogBook | None, CatalogBook | None]:
     """A primeira oferta de cada loja ocupa o lugar dela. A segunda da mesma loja vai em extra."""
-    amazon = mercado = shopee = extra = None
+    amazon = mercado = shopee = magalu = extra = None
     for book in ofertas:
         if book.store == "amazon" and amazon is None:
             amazon = book
@@ -521,9 +586,11 @@ def _encaixar(ofertas: list[CatalogBook]) -> tuple[CatalogBook | None, CatalogBo
             mercado = book
         elif book.store == "shopee" and shopee is None:
             shopee = book
+        elif book.store == "magalu" and magalu is None:
+            magalu = book
         else:
             extra = book
-    return amazon, mercado, shopee, extra
+    return amazon, mercado, shopee, magalu, extra
 
 
 def _segunda_oferta(
@@ -553,6 +620,10 @@ def _segunda_oferta(
         return None
     if loja == "ml":
         link_ok = _link_ml(link, code, linha, avisos, rejeitados, campo="link_2")
+        if link_ok is None:
+            return None
+    elif loja == "magalu":
+        link_ok = _link_magalu(link, code, linha, avisos, rejeitados, campo="link_2")
         if link_ok is None:
             return None
     elif loja == "shopee":
@@ -589,6 +660,8 @@ def _loja_do_texto(value: str) -> str:
     text = (value or "").strip()
     if not text:
         return ""
+    if is_magalu_url(text):
+        return "magalu"
     compact = text.replace(" ", "")
     if SHOPEE_ID.fullmatch(compact) or _ids_do_link_shopee(text):
         return "shopee"
@@ -598,6 +671,11 @@ def _loja_do_texto(value: str) -> str:
         return "ml"
     if _ASIN.fullmatch(code) or _ASIN.fullmatch(found):
         return "amazon"
+    linked = magalu_product_id(text)
+    if linked:
+        return "magalu"
+    if compact and _ML_ID.fullmatch(code) is None and _ASIN.fullmatch(code) is None:
+        return "magalu"
     return ""
 
 
@@ -621,13 +699,20 @@ def _anuncio(
     link = row.get(f"link{suffix}") or "" if suffix else ""
     if not any((raw, title, price_text, list_text, badge, coupon, link, image)):
         return None
-    code = _codigo(raw, loja=loja, linha=linha, errors=errors) if raw else ""
+    effective = "magalu" if loja == "ml" and _ml_e_magalu(raw, link) else loja
+    code = _codigo(raw, loja=effective, linha=linha, errors=errors) if raw else ""
+    if not code and effective == "magalu" and link.strip():
+        code = magalu_product_id(link) or ""
     if not code:
         if raw or title or price_text or (suffix and link):
             if not _ja_reclamou(errors, linha):
-                errors.append(f"Linha {linha}: falta o código ou o link da {_nome_loja(loja)}.")
+                errors.append(f"Linha {linha}: falta o código ou o link da {_nome_loja(effective)}.")
         return None
-    if loja == "ml":
+    if effective == "magalu":
+        link_ok = _link_magalu(link, code, linha, avisos, rejeitados)
+        if link_ok is None:
+            return None
+    elif loja == "ml":
         link_ok = _link_ml(link, code, linha, avisos, rejeitados)
         if link_ok is None:
             return None
@@ -655,7 +740,7 @@ def _anuncio(
         "list_cents": listed,
         "low_365": _badge(badge),
         "url": _url(raw, code) if loja == "amazon" else link_ok,
-        "store": loja,
+        "store": effective,
         "image_url": image if suffix else "",
         "coupon": coupon,
     }
@@ -698,11 +783,26 @@ def _publico(book: CatalogBook) -> dict:
 
 def _store_of(item: dict) -> str:
     store = item.get("store") or "amazon"
-    return store if store in {"amazon", "ml", "shopee"} else "amazon"
+    return store if store in {"amazon", "ml", "shopee", "magalu"} else "amazon"
 
 
 def _nome_loja(loja: str) -> str:
-    return {"ml": "Mercado Livre", "shopee": "Shopee"}.get(loja, "Amazon")
+    return {"ml": "Mercado Livre", "shopee": "Shopee", "magalu": "Magazine Luiza"}.get(loja, "Amazon")
+
+
+def _ml_e_magalu(raw: str, link: str) -> bool:
+    """Nas colunas _ml, Magalu tem prioridade sobre o Mercado Livre."""
+    if is_magalu_url(link) or is_magalu_url(raw):
+        return True
+    text = (raw or "").strip()
+    if text:
+        upper = text.upper().replace(" ", "")
+        if _ML_ID.fullmatch(upper) or _ASIN.fullmatch(upper) or SHOPEE_ID.fullmatch(text.replace(" ", "")):
+            return False
+        linked = magalu_product_id(link)
+        if linked and linked.casefold() == text.casefold():
+            return True
+    return bool(magalu_product_id(link))
 
 
 def _link_shopee(
@@ -734,6 +834,35 @@ def _ids_do_link_shopee(url: str) -> str:
     if not match:
         return ""
     return f"{match.group(1)}.{match.group(2)}"
+
+
+def _link_magalu(
+    raw: str,
+    code: str,
+    linha: int,
+    avisos: list[str],
+    rejeitados: list[str],
+    campo: str = "link_ml",
+) -> str | None:
+    """O endereço sai do link_ml. None pula a Magazine Luiza; código trocado recusa a linha."""
+    original = raw.strip()
+    if not original:
+        avisos.append(f"Linha {linha}: {campo} inválido para {code}: . {_FORMATOS_MAGALU}")
+        return None
+    if not is_magalu_url(original):
+        avisos.append(f"Linha {linha}: {campo} inválido para {code}: {original}. {_FORMATOS_MAGALU}")
+        return None
+    found = magalu_product_id(original)
+    if found and found.casefold() == code.casefold():
+        return original.split("?")[0]
+    if found:
+        rejeitados.append(
+            f"Linha {linha}: {campo} inválido para {code}: {original}. "
+            f"O código depois de /p/ precisa ser o do asin_ml. {_FORMATOS_MAGALU}"
+        )
+        return None
+    avisos.append(f"Linha {linha}: {campo} inválido para {code}: {original}. {_FORMATOS_MAGALU}")
+    return None
 
 
 def _link_ml(
@@ -788,6 +917,22 @@ def _codigo(value: str, *, loja: str, linha: int, errors: list[str]) -> str:
         found = _ids_do_link_shopee(text)
         if found:
             return found
+        errors.append(f"Linha {linha}: não reconheci o anúncio {text}.")
+        return ""
+    if loja == "magalu":
+        stripped = text.strip()
+        from_url = magalu_product_id(text) if is_magalu_url(text) else ""
+        if from_url:
+            return from_url
+        if stripped:
+            upper = stripped.upper().replace(" ", "")
+            if _ML_ID.fullmatch(upper):
+                errors.append(f"Linha {linha}: {stripped} é do Mercado Livre e vai nas colunas _ml com link MLB.")
+                return ""
+            if _ASIN.fullmatch(upper):
+                errors.append(f"Linha {linha}: {stripped} é da Amazon e vai na coluna asin.")
+                return ""
+            return stripped
         errors.append(f"Linha {linha}: não reconheci o anúncio {text}.")
         return ""
     code = text.upper().replace(" ", "")

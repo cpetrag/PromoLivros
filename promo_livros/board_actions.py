@@ -6,6 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from promo_livros.board_store import BoardBook, BoardStore
+from promo_livros.lojas import store_of
 from promo_livros.post_card import download_image, render_card
 from promo_livros.post_copy import render_caption
 
@@ -81,7 +82,8 @@ def revise_manual(
         return None
     destination = cards_dir / f"{post_id}.jpg"
     try:
-        render_card([download_image(cover_url)], destination)
+        stores = [store_of(book) for book in books][:1] or None
+        render_card([download_image(cover_url)], destination, stores=stores)
     except (OSError, ValueError):
         return "O texto foi salvo, mas a capa nova não entrou."
     store.set_image(post_id, f"data/cards/{post_id}.jpg")
@@ -109,6 +111,7 @@ def schedule_manual(
     except ValueError as exc:
         return str(exc)
     books, covers = _amazon_first(books, covers)
+    stores = [store_of(book) for book in books]
     if resolve_urls is not None:
         resolved = resolve_urls([book.url for book in books])
         if len(resolved) == len(books):
@@ -134,7 +137,7 @@ def schedule_manual(
     post_id = store.add_post(day=day, clock=clock, caption=caption, image_path="", books=books)
     destination = cards_dir / f"{post_id}.jpg"
     try:
-        render_card(covers, destination)
+        render_card(covers, destination, stores=stores)
     except (OSError, ValueError):
         store.cancel(day, post_id)
         return "Não montei o card."

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from promo_livros.board_store import BoardBook, BoardStore
 from promo_livros.config import load_config
+from promo_livros.lojas import store_of
 from promo_livros.post_card import download_image, render_card
 from promo_livros.post_copy import blurb_for, product_coupon, render_caption
 from promo_livros.schedule_plan import service_day, zone
@@ -86,7 +87,7 @@ def main() -> None:
             books=books,
         )
         destination = cards / f"{post_id}.jpg"
-        render_card(covers, destination)
+        render_card(covers, destination, stores=[store_of(book) for book in books])
         store.set_image(post_id, f"data/cards/{post_id}.jpg")
         print(f"{clock} {count} livro(s) -> {post_id}", flush=True)
     print(f"Fila de {day} pronta.", flush=True)

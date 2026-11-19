@@ -183,7 +183,7 @@ def write_board(
             image_path="",
             books=[_stored_book(payload)],
         )
-        render_card([cover], cards_dir / f"{post_id}.jpg")
+        render_card([cover], cards_dir / f"{post_id}.jpg", stores=["amazon"])
         cover.close()
         store.set_image(post_id, f"data/cards/{post_id}.jpg")
         written += 1

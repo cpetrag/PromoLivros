@@ -111,6 +111,10 @@ class AppConfig:
     shopee_app_id: str
     shopee_secret: str
     shopee_sub_id: str
+    magalu_promoter_id: str
+    magalu_partner_id: str
+    aqui_api_key: str
+    aqui_base_url: str
 
 
 @dataclass(frozen=True)

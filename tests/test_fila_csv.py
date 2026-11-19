@@ -28,6 +28,7 @@ _SHOPEE_LINK = (
 _SHOPEE_IMG = "https://down-br.img.susercontent.com/file/sg-11134201-7qvd9-lg5gd41l2bsz35"
 
 _LINK = "https://www.mercadolivre.com.br/capitaes-da-areia/p/MLB9990001111"
+_MAGALU_LINK = "https://www.magazineluiza.com.br/livro-foo/p/jf7k9gad9/sku123/"
 
 _FILA = f"""{_HEADER}
 10:15;B000000001;Shakespeare;R$ 11,00;R$ 20,00;sim;Cupom: GILDO10;MLB1111111;Capitães da Areia;R$ 19,00;R$ 39,00;nao;;{_LINK}?matt_tool=1
@@ -40,6 +41,55 @@ def _download(_url: str) -> Image.Image:
 
 
 class FilaCsvTests(unittest.TestCase):
+    def test_colunas_ml_com_link_magalu_vai_para_store_magalu(self) -> None:
+        text = (
+            f"{_HEADER}\n"
+            "10:15;B000000001;Amazon;R$ 10,00;;nao;;"
+            f"jf7k9gad9;Livro Magalu;R$ 29,90;R$ 49,90;nao;;{_MAGALU_LINK}\n"
+        )
+        rows = parse_fila_csv(text)
+        self.assertIsNone(rows[0]["ml"])
+        magalu = rows[0]["magalu"]
+        self.assertIsNotNone(magalu)
+        self.assertEqual(magalu["store"], "magalu")
+        self.assertEqual(magalu["asin"], "jf7k9gad9")
+        self.assertEqual(magalu["title"], "Livro Magalu")
+        self.assertEqual(magalu["price_cents"], 2990)
+        self.assertEqual(magalu["url"], _MAGALU_LINK)
+        self.assertEqual(rows[0]["amazon"]["asin"], "B000000001")
+
+    def test_colunas_ml_mercado_livre_continua_store_ml(self) -> None:
+        rows = parse_fila_csv("\ufeff" + _FILA)
+        mercado = rows[0]["ml"]
+        self.assertIsNone(rows[0]["magalu"])
+        self.assertEqual(mercado["store"], "ml")
+        self.assertEqual(mercado["asin"], "MLB1111111")
+
+    def test_previa_csv_magalu_no_slot_e_passos(self) -> None:
+        text = (
+            f"{_HEADER}\n"
+            "10:15;B000000001;Amazon;R$ 10,00;;nao;;"
+            f"jf7k9gad9;Livro Magalu;R$ 29,90;;nao;;{_MAGALU_LINK}\n"
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            catalog = CatalogStore(root / "board.sqlite")
+            board = BoardStore(root / "board.sqlite")
+            try:
+                memoria = MemoriaPrevia()
+                payload = previa_do_csv(catalog, board, "2026-10-03", "09:00", "22:00", text, memoria)
+                slot = payload["slots"][0]
+                self.assertIsNone(slot["ml"])
+                self.assertEqual(slot["magalu"]["title"], "Livro Magalu")
+                self.assertEqual(payload["slots_ids"][0]["magalu"], "jf7k9gad9")
+                stores = {book["store"] for book in payload["livros"]}
+                self.assertEqual(stores, {"amazon", "magalu"})
+                labels = " ".join(step["label"] for step in payload["passos"])
+                self.assertIn("Magazine Luiza", labels)
+            finally:
+                catalog.close()
+                board.close()
+
     def test_le_o_post_inteiro_e_a_pagina_mostra_o_formato(self) -> None:
         rows = parse_fila_csv("\ufeff" + _FILA)
         amazon = rows[0]["amazon"]
@@ -450,6 +500,180 @@ class FilaCsvTests(unittest.TestCase):
                 self.assertEqual(job.visao()["quebrados"][0]["titulo"], "Capitães da Areia")
                 self.assertIn("URL not allowed", job.visao()["quebrados"][0]["motivo"])
                 self.assertIn("Ficaram de fora: Capitães da Areia.", job.message)
+            finally:
+                catalog.close()
+                board.close()
+
+    def test_converter_magalu_grava_url_final_encurtada(self) -> None:
+        from promo_livros.fila_csv import ImportacaoFila, avancar
+
+        text = (
+            f"{_HEADER}\n"
+            "10:15;B000000001;Amazon;R$ 10,00;;nao;;"
+            f"jf7k9gad9;Livro Magalu;R$ 29,90;;nao;;{_MAGALU_LINK}\n"
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            catalog = CatalogStore(root / "board.sqlite")
+            board = BoardStore(root / "board.sqlite")
+            try:
+                payload = previa_do_csv(catalog, board, "2026-10-03", "09:00", "22:00", text, MemoriaPrevia())
+                job = ImportacaoFila(payload)
+                short = "https://aqui.descontos.ai/abc123"
+
+                def resolve_magalu(urls: list[str]) -> list[str]:
+                    return [short if url else "" for url in urls]
+
+                def resolve_amazon(urls: list[str]) -> list[str]:
+                    return [f"{urls[0]}?tag=promo"]
+
+                def gravar(atual) -> str:
+                    return "ok"
+
+                while not job.done and not job.error:
+                    avancar(
+                        job,
+                        resolve_amazon=resolve_amazon,
+                        resolve_ml=lambda urls: urls,
+                        resolve_magalu=resolve_magalu,
+                        describe=lambda title, author="": "",
+                        gravar=gravar,
+                    )
+                self.assertEqual(job.livros["jf7k9gad9"]["url_final"], short)
+                self.assertTrue(job.done)
+            finally:
+                catalog.close()
+                board.close()
+
+    def test_converter_magalu_falha_deixa_oferta_de_fora(self) -> None:
+        from promo_livros.fila_csv import ImportacaoFila, LinkQuebrado, avancar
+
+        text = (
+            f"{_HEADER}\n"
+            "10:15;B000000001;Amazon;R$ 10,00;;nao;;"
+            f"jf7k9gad9;Livro Magalu;R$ 29,90;;nao;;{_MAGALU_LINK}\n"
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            catalog = CatalogStore(root / "board.sqlite")
+            board = BoardStore(root / "board.sqlite")
+            try:
+                payload = previa_do_csv(catalog, board, "2026-10-03", "09:00", "22:00", text, MemoriaPrevia())
+                job = ImportacaoFila(payload)
+
+                def resolve_magalu(_urls: list[str]) -> list[str]:
+                    raise LinkQuebrado("O Aqui não encurtou o link.")
+
+                def gravar(atual) -> str:
+                    return "ok"
+
+                while not job.done and not job.error:
+                    avancar(
+                        job,
+                        resolve_amazon=lambda urls: [f"{urls[0]}?tag=promo"],
+                        resolve_ml=lambda urls: urls,
+                        resolve_magalu=resolve_magalu,
+                        describe=lambda title, author="": "",
+                        gravar=gravar,
+                    )
+                self.assertNotIn("jf7k9gad9", job.livros)
+                self.assertEqual(job.slots_ids[0]["magalu"], "")
+                quebrados = job.visao()["quebrados"]
+                self.assertEqual(len(quebrados), 1)
+                self.assertEqual(quebrados[0]["titulo"], "Livro Magalu")
+            finally:
+                catalog.close()
+                board.close()
+
+    def test_magalu_encurtamento_nao_chama_aqui_nas_outras_lojas(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from promo_livros.fila_csv import ImportacaoFila, LinkQuebrado, avancar
+        from promo_livros.magalu_links import MagaluConvertResult
+
+        def resolve_magalu(urls: list[str]) -> list[str]:
+            from promo_livros.aqui_links import create_short_link
+            from promo_livros.magalu_links import convert_magalu
+
+            out: list[str] = []
+            for url in urls:
+                got = convert_magalu(url, promoter_id="promo", partner_id="partner")
+                if not got.ok:
+                    raise LinkQuebrado(got.erro or "falhou")
+                out.append(
+                    create_short_link(
+                        got.link_convertido,
+                        api_key="aqui_key",
+                        base_url="https://aqui.descontos.ai",
+                    )
+                )
+            return out
+
+        converted = (
+            "https://www.magazineluiza.com.br/foo/divulgador/oferta/jf7k9gad9/?"
+            "promoter_id=promo&partner_id=partner"
+        )
+        mock_convert = MagicMock(
+            return_value=MagaluConvertResult(converted, "produto", True, ""),
+        )
+        mock_aqui = MagicMock(return_value="https://aqui.descontos.ai/xyz")
+
+        text_magalu = (
+            f"{_HEADER}\n"
+            "10:15;B000000001;Amazon;R$ 10,00;;nao;;"
+            f"jf7k9gad9;Livro Magalu;R$ 29,90;;nao;;{_MAGALU_LINK}\n"
+        )
+        text_sem_magalu = (
+            f"{_HEADER_3}\n"
+            "10:15;B000000001;Amazon;R$ 10,00;;nao;;;;;;;;;;"
+            f"482840775.22595587888;Box;R$ 59,90;;nao;;{_SHOPEE_IMG};{_SHOPEE_LINK}\n"
+        )
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            catalog = CatalogStore(root / "board.sqlite")
+            board = BoardStore(root / "board.sqlite")
+            try:
+                with patch("promo_livros.magalu_links.convert_magalu", mock_convert):
+                    with patch("promo_livros.aqui_links.create_short_link", mock_aqui):
+                        payload = previa_do_csv(
+                            catalog, board, "2026-10-03", "09:00", "22:00", text_magalu, MemoriaPrevia()
+                        )
+                        job = ImportacaoFila(payload)
+                        while not job.done and not job.error:
+                            avancar(
+                                job,
+                                resolve_amazon=lambda urls: [f"{urls[0]}?tag=promo"],
+                                resolve_ml=lambda urls: urls,
+                                resolve_shopee=lambda urls: ["https://s.shopee.com.br/x"],
+                                resolve_magalu=resolve_magalu,
+                                describe=lambda title, author="": "",
+                                gravar=lambda _atual: "ok",
+                            )
+                self.assertEqual(mock_convert.call_count, 1)
+                self.assertEqual(mock_aqui.call_count, 1)
+                self.assertEqual(job.livros["jf7k9gad9"]["url_final"], "https://aqui.descontos.ai/xyz")
+
+                mock_convert.reset_mock()
+                mock_aqui.reset_mock()
+                with patch("promo_livros.magalu_links.convert_magalu", mock_convert):
+                    with patch("promo_livros.aqui_links.create_short_link", mock_aqui):
+                        payload = previa_do_csv(
+                            catalog, board, "2026-10-03", "09:00", "22:00", text_sem_magalu, MemoriaPrevia()
+                        )
+                        job = ImportacaoFila(payload)
+                        while not job.done and not job.error:
+                            avancar(
+                                job,
+                                resolve_amazon=lambda urls: [f"{urls[0]}?tag=promo"],
+                                resolve_ml=lambda urls: urls,
+                                resolve_shopee=lambda urls: ["https://s.shopee.com.br/x"],
+                                resolve_magalu=resolve_magalu,
+                                describe=lambda title, author="": "",
+                                gravar=lambda _atual: "ok",
+                            )
+                self.assertEqual(mock_convert.call_count, 0)
+                self.assertEqual(mock_aqui.call_count, 0)
             finally:
                 catalog.close()
                 board.close()

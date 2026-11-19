@@ -6,7 +6,7 @@ from PIL import Image
 
 from promo_livros.board_store import BoardBook, BoardStore
 from promo_livros.catalog import CatalogError, CatalogStore, parse_csv, publish_selection
-from promo_livros.fila_aplicar import MemoriaPrevia, aplicar, desfazer, previa
+from promo_livros.fila_aplicar import MemoriaPrevia, aplicar, desfazer, previa, reorganizar
 
 _CSV = """posicao;titulo;autor;categoria;categoria_caminho;formato;preco;preco_de;menor_preco_365;badges;categoria_mais_vendido;asin;link
 "1";"Shakespeare";"W";"";"";"";"R$ 11,00";"R$ 20,00";"sim";"";"";"B000000001";"https://www.amazon.com.br/dp/B000000001"
@@ -157,6 +157,37 @@ class PreviaAplicarTests(unittest.TestCase):
                         root / "cards",
                         download=_download,
                     )
+            finally:
+                catalog.close()
+                board.close()
+
+    def test_reorganizar_passa_magalu_para_montar_fila(self) -> None:
+        _MAGALU_ROW = (
+            "posicao;asin;titulo;preco;preco_de;link;imagem;menor_preco_365;categoria;autor\n"
+            "1;jf7k9gad9;Livro Magalu;R$ 29,90;R$ 49,90;"
+            "https://www.magazineluiza.com.br/livro/p/jf7k9gad9/sku/;;;;\n"
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            catalog = CatalogStore(root / "board.sqlite")
+            board = BoardStore(root / "board.sqlite")
+            try:
+                catalog.replace(parse_csv(_CSV), "amazon")
+                catalog.replace_magalu(parse_csv(_MAGALU_ROW), "magalu.csv")
+                catalog.set_picked("B000000002", True, "2026-10-02")
+                catalog.set_ml_picked("jf7k9gad9", True, "2026-10-02")
+                publish_selection(
+                    catalog, board, "2026-10-02", "07:00", root / "cards", download=_download
+                )
+                reorganizar(catalog, board, "2026-10-02", "15:12", root / "cards", download=_download)
+                magalu = [
+                    book
+                    for post in board.posts_for("2026-10-02")
+                    for book in post.books
+                    if "magazineluiza" in book.url
+                ]
+                self.assertEqual(len(magalu), 1)
+                self.assertEqual(magalu[0].title, "Livro Magalu")
             finally:
                 catalog.close()
                 board.close()

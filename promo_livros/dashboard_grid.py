@@ -7,7 +7,7 @@ from promo_livros.formatter import format_brl
 from promo_livros.lojas import store_of
 from promo_livros.send_schedule import upcoming_clocks
 
-_STORE_LABEL = {"amazon": "Amazon", "ml": "Mercado Livre", "shopee": "Shopee"}
+_STORE_LABEL = {"amazon": "Amazon", "ml": "Mercado Livre", "shopee": "Shopee", "magalu": "Magazine Luiza"}
 
 
 def render_grid(posts: list, schedule, now_clock: str | None, day: str = "") -> str:
@@ -142,6 +142,7 @@ button.grid-cell.is-picked { border-color: var(--ink); background: color-mix(in 
 .grid-tag.amazon { background: #EEF3F8; color: #1F3A5F; }
 .grid-tag.shopee { background: #FDE8E1; color: #A53A16; }
 .grid-tag.ml { background: #FFF6CC; color: #6B5600; }
+.grid-tag.magalu { background: #E6F0FF; color: #0046BE; }
 .grid-done summary { cursor: pointer; color: var(--muted); padding: 6px 0; font-weight: 600; }
 dialog.grid-dialog { border: 0; border-radius: 14px; background: var(--card); color: var(--ink); width: min(26rem, calc(100% - 1.5rem)); padding: 16px 18px; }
 dialog.grid-dialog::backdrop { background: rgba(20, 24, 28, 0.35); }

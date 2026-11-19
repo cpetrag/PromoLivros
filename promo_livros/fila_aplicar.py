@@ -9,8 +9,9 @@ import threading
 import time
 from datetime import date, timedelta
 
-from promo_livros.catalog import CatalogBook, CatalogError, publish_selection
+from promo_livros.catalog import CatalogBook, CatalogError, _in_second_store, publish_selection
 from promo_livros.fila import OpcoesFila, chave_obra, item_de_livro, montar_fila, produto_de_url
+from promo_livros.magalu_links import is_magalu_url
 from promo_livros.shopee_links import is_shopee_product
 
 UNDO_SECONDS = 10 * 60
@@ -78,12 +79,17 @@ def limpar_ordem_manual(board) -> None:
 
 
 def calcular(catalog, board, day: str, agora: str, ordem: str):
-    amazon, mercado = catalog.queue_for(day)
+    amazon, segunda = catalog.queue_for(day)
     enviados, obras = _enviados(catalog, board, day)
     amazon = _com_bloqueados(amazon, catalog.books(), enviados)
-    mercado = _com_bloqueados(mercado, catalog.ml_books(), enviados)
-    # Shopee não tem catálogo: o livro só existe no post que veio da fila importada.
-    shopee, imagens = _shopee_dos_posts(catalog, board.posts_for(day))
+    segunda = _com_bloqueados(segunda, catalog.ml_books(), enviados)
+    mercado = [book for book in segunda if book.store == "ml"]
+    magalu = [book for book in segunda if book.store == "magalu"]
+    marcados_shopee = [book for book in segunda if book.store == "shopee"]
+    # Shopee também pode existir só no post que veio da fila importada.
+    shopee_post, imagens = _shopee_dos_posts(catalog, board.posts_for(day))
+    conhecidos = {book.asin for book in marcados_shopee}
+    shopee = [*marcados_shopee, *[book for book in shopee_post if book.asin not in conhecidos]]
     fila = montar_fila(
         [item_de_livro(book) for book in amazon],
         [item_de_livro(book) for book in mercado],
@@ -98,6 +104,7 @@ def calcular(catalog, board, day: str, agora: str, ordem: str):
             ordem_manual=ordem_manual(board, day) if ordem == "mine" else None,
         ),
         shopee=[item_de_livro(book) for book in shopee],
+        magalu=[item_de_livro(book) for book in magalu],
     )
     return fila, shopee, imagens
 
@@ -215,10 +222,12 @@ def reorganizar(catalog, board, day: str, agora: str, cards_dir, **kwargs) -> st
         return "Não há posts para reorganizar."
     enviados, obras = _enviados(catalog, board, day)
     amazon, mercado, shopee, extras = _livros_dos_posts(catalog, posts, enviados)
+    magalu = [book for book in mercado if book.store == "magalu"]
+    mercado_ml = [book for book in mercado if book.store != "magalu"]
     schedule = board.send_schedule()
     fila = montar_fila(
         [item_de_livro(book) for book in amazon],
-        [item_de_livro(book) for book in mercado],
+        [item_de_livro(book) for book in mercado_ml],
         OpcoesFila(
             agora=agora,
             inicio=schedule.start,
@@ -229,6 +238,7 @@ def reorganizar(catalog, board, day: str, agora: str, cards_dir, **kwargs) -> st
             obras_enviadas=obras,
         ),
         shopee=[item_de_livro(book) for book in shopee],
+        magalu=[item_de_livro(book) for book in magalu],
     )
     if not fila.slots:
         return "A janela de hoje já fechou. Os horários não mudaram."
@@ -239,6 +249,7 @@ def reorganizar(catalog, board, day: str, agora: str, cards_dir, **kwargs) -> st
             "amazon": slot.amazon.id if slot.amazon else "",
             "ml": slot.ml.id if slot.ml else "",
             "shopee": slot.shopee.id if slot.shopee else "",
+            "magalu": slot.magalu.id if slot.magalu else "",
             "extra": slot.extra.id if slot.extra else "",
         }
         for slot in fila.slots
@@ -281,7 +292,7 @@ def _payload(fila, posts, catalog) -> dict:
         atual.append((post.clock, amazon, segunda, post.books[0].title if post.books else ""))
     nova = []
     for slot in fila.slots:
-        segunda = slot.ml or slot.shopee
+        segunda = slot.ml or slot.shopee or slot.magalu
         nova.append(
             (
                 slot.clock,
@@ -303,6 +314,7 @@ def _payload(fila, posts, catalog) -> dict:
                 "amazon": slot.amazon.id if slot.amazon else "",
                 "ml": slot.ml.id if slot.ml else "",
                 "shopee": slot.shopee.id if slot.shopee else "",
+                "magalu": slot.magalu.id if slot.magalu else "",
                 "extra": slot.extra.id if slot.extra else "",
             }
             for slot in fila.slots
@@ -325,14 +337,18 @@ def _payload(fila, posts, catalog) -> dict:
         ],
         "clocks": list(fila.clocks),
         "avisos": sum(
-            len(slot.amazon_avisos) + len(slot.ml_avisos) + len(slot.shopee_avisos) + len(slot.extra_avisos)
+            len(slot.amazon_avisos)
+            + len(slot.ml_avisos)
+            + len(slot.shopee_avisos)
+            + len(slot.magalu_avisos)
+            + len(slot.extra_avisos)
             for slot in fila.slots
         ),
     }
 
 
 def _segunda_loja(product_id: str) -> bool:
-    return product_id.startswith("MLB") or is_shopee_product(product_id)
+    return _in_second_store(product_id)
 
 
 def _slot_json(slot) -> dict:
@@ -341,6 +357,7 @@ def _slot_json(slot) -> dict:
         "amazon": _item_json(slot.amazon, slot.amazon_avisos),
         "ml": _item_json(slot.ml, slot.ml_avisos),
         "shopee": _item_json(slot.shopee, slot.shopee_avisos),
+        "magalu": _item_json(slot.magalu, slot.magalu_avisos),
         "extra": _item_json(slot.extra, slot.extra_avisos),
     }
 
@@ -366,7 +383,9 @@ def _diff_json(row) -> dict:
 
 
 def _titulo_slot(slot) -> str:
-    titles = [item.title for item in (slot.amazon, slot.ml, slot.shopee, slot.extra) if item is not None]
+    titles = [
+        item.title for item in (slot.amazon, slot.ml, slot.shopee, slot.magalu, slot.extra) if item is not None
+    ]
     return " · ".join(titles)
 
 
@@ -438,7 +457,7 @@ def _livros_dos_posts(catalog, posts, enviados: dict[str, tuple[str, ...]]):
                 extras.append(known)
             if known.store == "shopee":
                 shopee.append(known)
-            elif known.store == "ml" or product_id.startswith("MLB"):
+            elif known.store in {"ml", "magalu"} or product_id.startswith("MLB"):
                 mercado.append(known)
             else:
                 amazon.append(known)
@@ -465,6 +484,8 @@ def _shopee_dos_posts(catalog, posts) -> tuple[list[CatalogBook], dict[str, str]
 def _loja_do_post(book, product_id: str) -> str:
     if is_shopee_product(product_id, book.url):
         return "shopee"
+    if is_magalu_url(book.url):
+        return "magalu"
     return "ml" if product_id.startswith("MLB") else "amazon"
 
 

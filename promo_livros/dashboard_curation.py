@@ -18,8 +18,9 @@ body.wide > main { width: min(76rem, calc(100% - 1.5rem)); padding-bottom: 5.5re
 .context a { color: var(--blue); }
 .import-menu summary { cursor: pointer; }
 .token code { display: block; word-break: break-all; font-size: 0.82rem; }
-.store-switch { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.7rem; margin: 0.8rem 0; }
+.store-switch { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.7rem; margin: 0.8rem 0; }
 .store-switch .store-shopee[aria-pressed="true"] { border-color: #ee4d2d; background: color-mix(in srgb, #ee4d2d 12%, var(--surface)); }
+.store-switch .store-magalu[aria-pressed="true"] { border-color: #0086ff; background: color-mix(in srgb, #0086ff 12%, var(--surface)); }
 .store-switch button { text-align: left; border-radius: 16px; min-height: 4.4rem; background: var(--surface); color: var(--ink); border: 1px solid var(--line); }
 .store-switch .store-amazon[aria-pressed="true"] { border-color: var(--amber); background: color-mix(in srgb, var(--amber) 18%, var(--surface)); }
 .store-switch .store-ml[aria-pressed="true"] { border-color: var(--blue); background: color-mix(in srgb, var(--amber) 14%, color-mix(in srgb, var(--blue) 12%, var(--surface))); }
@@ -140,12 +141,15 @@ _SCRIPT = r"""
   var toastTimer = 0;
 
   function $(id) { return document.getElementById(id); }
-  var LOJA_PARAM = { amazon: "amazon", ml: "mercadolivre", shopee: "shopee" };
+  var LOJA_PARAM = { amazon: "amazon", ml: "mercadolivre", shopee: "shopee", magalu: "magalu" };
   data.shopee = data.shopee || [];
-  function listOf(loja) { return loja === "ml" ? data.ml : loja === "shopee" ? data.shopee : data.amazon; }
+  data.magalu = data.magalu || [];
+  function listOf(loja) {
+    return loja === "ml" ? data.ml : loja === "shopee" ? data.shopee : loja === "magalu" ? data.magalu : data.amazon;
+  }
   function books() { return listOf(state.loja); }
-  function allBooks() { return data.amazon.concat(data.ml, data.shopee); }
-  function secondStore() { return state.loja === "ml" || state.loja === "shopee"; }
+  function allBooks() { return data.amazon.concat(data.ml, data.shopee, data.magalu); }
+  function secondStore() { return state.loja === "ml" || state.loja === "shopee" || state.loja === "magalu"; }
   function money(cents) {
     if (!cents) return "";
     return "R$ " + (cents / 100).toFixed(2).replace(".", ",");
@@ -237,7 +241,7 @@ _SCRIPT = r"""
     if (button) button.setAttribute("aria-pressed", on ? "true" : "false");
   }
   function renderStores() {
-    ["amazon", "ml", "shopee"].forEach(function (loja) {
+    ["amazon", "ml", "shopee", "magalu"].forEach(function (loja) {
       var button = $("store-" + loja);
       if (!button) return;
       var list = listOf(loja);
@@ -249,7 +253,7 @@ _SCRIPT = r"""
     });
     var low = $("only-low");
     if (low) {
-      var storeName = state.loja === "shopee" ? "da Shopee" : "do Mercado Livre";
+      var storeName = state.loja === "shopee" ? "da Shopee" : state.loja === "magalu" ? "da Magazine Luiza" : "do Mercado Livre";
       var history = books().some(function (book) { return book.historyDays; });
       low.disabled = secondStore() && !history;
       low.title = !secondStore() ? "" : history
@@ -352,7 +356,7 @@ _SCRIPT = r"""
     box.append(button, link);
     return box;
   }
-  var STORE_NAMES = { amazon: "Amazon", ml: "Mercado Livre", shopee: "Shopee" };
+  var STORE_NAMES = { amazon: "Amazon", ml: "Mercado Livre", shopee: "Shopee", magalu: "Magazine Luiza" };
   function safeUrl(url) {
     // A URL vem de CSV e de crawler: só https vira link, para não abrir javascript: nem outro esquema.
     var target;
@@ -380,7 +384,7 @@ _SCRIPT = r"""
     link.rel = "noopener noreferrer";
     link.textContent = "↗";
     var host = target.hostname;
-    var known = /shopee\./.test(host) ? "shopee" : /mercadoli[vb]re\.|meli\.la$/.test(host) ? "ml" : /amazon\.|amzn\./.test(host) ? "amazon" : store;
+    var known = /shopee\./.test(host) ? "shopee" : /magalu\.|magazineluiza\.|magazinevoce\./.test(host) ? "magalu" : /mercadoli[vb]re\.|meli\.la$/.test(host) ? "ml" : /amazon\.|amzn\./.test(host) ? "amazon" : store;
     var name = "Abrir na " + (STORE_NAMES[known] || "loja");
     link.title = name;
     link.setAttribute("aria-label", name);
@@ -416,13 +420,16 @@ _SCRIPT = r"""
     var amazonCount = slots.filter(function (slot) { return slot.amazon; }).length;
     var mlCount = slots.filter(function (slot) { return slot.ml; }).length;
     var shopeeCount = slots.filter(function (slot) { return slot.shopee; }).length;
-    var secondCount = mlCount + shopeeCount;
+    var magaluCount = slots.filter(function (slot) { return slot.magalu; }).length;
+    var secondCount = mlCount + shopeeCount + magaluCount;
     $("cap-az").style.width = (clocks.length ? Math.round(amazonCount / clocks.length * 100) : 0) + "%";
     $("cap-ml").style.width = (clocks.length ? Math.round(secondCount / clocks.length * 100) : 0) + "%";
     $("cap-az-label").textContent = "Amazon " + amazonCount + "/" + clocks.length;
-    $("cap-ml-label").textContent = shopeeCount
-      ? "Mercado Livre " + mlCount + " · Shopee " + shopeeCount + " · " + secondCount + "/" + clocks.length
-      : "Mercado Livre " + mlCount + "/" + clocks.length;
+    var parts = ["Mercado Livre " + mlCount];
+    if (shopeeCount) parts.push("Shopee " + shopeeCount);
+    if (magaluCount) parts.push("Magalu " + magaluCount);
+    parts.push(secondCount + "/" + clocks.length);
+    $("cap-ml-label").textContent = shopeeCount || magaluCount ? parts.join(" · ") : "Mercado Livre " + mlCount + "/" + clocks.length;
     var blocked = $("blocked");
     var nomes = (plan.bloqueados || []).map(function (item) { return item.title; });
     blocked.hidden = !nomes.length;
@@ -432,7 +439,7 @@ _SCRIPT = r"""
     slots.forEach(function (slot, index) {
       var row = document.createElement("div");
       row.className = "slot-row";
-      var warn = ((slot.amazon && slot.amazon.avisos) || []).concat((slot.ml && slot.ml.avisos) || []).concat((slot.shopee && slot.shopee.avisos) || []);
+      var warn = ((slot.amazon && slot.amazon.avisos) || []).concat((slot.ml && slot.ml.avisos) || []).concat((slot.shopee && slot.shopee.avisos) || []).concat((slot.magalu && slot.magalu.avisos) || []);
       if (warn.length) row.classList.add("warn");
       var clock = document.createElement("div");
       clock.className = "clock";
@@ -460,14 +467,15 @@ _SCRIPT = r"""
     ul.textContent = "";
     items.forEach(function (item) {
       var li = document.createElement("li");
-      li.textContent = (item.store === "ml" ? "Mercado Livre" : item.store === "shopee" ? "Shopee" : "Amazon") + " · " + item.title + (item.discount ? " · −" + item.discount + "%" : "");
+      var lojaLabel = item.store === "ml" ? "Mercado Livre" : item.store === "shopee" ? "Shopee" : item.store === "magalu" ? "Magazine Luiza" : "Amazon";
+      li.textContent = lojaLabel + " · " + item.title + (item.discount ? " · −" + item.discount + "%" : "");
       ul.append(li);
     });
     renderBar();
   }
   function half(slot, side, index) {
     var item = slot[side];
-    if (side === "ml" && !item) item = slot.shopee || slot.extra || null;
+    if (side === "ml" && !item) item = slot.shopee || slot.magalu || slot.extra || null;
     var cell = document.createElement("div");
     cell.className = "half " + side;
     cell.dataset.side = side;
@@ -480,7 +488,7 @@ _SCRIPT = r"""
     }
     if (!item) {
       cell.classList.add("empty");
-      cell.textContent = side === "ml" ? "vazio · marque no Mercado Livre ou na Shopee" : "vazio · marque na Amazon";
+      cell.textContent = side === "ml" ? "vazio · marque no Mercado Livre, na Shopee ou na Magazine Luiza" : "vazio · marque na Amazon";
       return cell;
     }
     var picture = imageOf(item);
@@ -501,6 +509,7 @@ _SCRIPT = r"""
     if (item.discount) price.innerHTML += " <b>−" + item.discount + "%</b>";
     text.append(name, price);
     if (item.store === "shopee") text.append(chip("Shopee", ""));
+    if (item.store === "magalu") text.append(chip("Magazine Luiza", ""));
     (item.avisos || []).forEach(function (aviso) { text.append(chip(aviso, "wait")); });
     cell.append(text);
     var tools = document.createElement("div");
@@ -522,7 +531,7 @@ _SCRIPT = r"""
     var segunda = [];
     (plan.slots || []).forEach(function (slot) {
       if (slot.amazon) amazon.push(slot.amazon.id);
-      var second = slot.ml || slot.shopee;
+      var second = slot.ml || slot.shopee || slot.magalu;
       if (second) segunda.push(second.id);
     });
     // A reserva de amanhã fica depois, na ordem em que já estava.
@@ -601,7 +610,7 @@ _SCRIPT = r"""
       if (otherIndex === index) return;
       var option = document.createElement("option");
       option.value = String(otherIndex);
-      var name = (other.amazon && other.amazon.title) || ((other.ml || other.shopee) || {}).title || "vazio";
+      var name = (other.amazon && other.amazon.title) || ((other.ml || other.shopee || other.magalu) || {}).title || "vazio";
       option.textContent = other.clock + " · " + name.slice(0, 40);
       select.append(option);
     });
@@ -658,7 +667,7 @@ _SCRIPT = r"""
     button.textContent = step < 0 ? "↑" : "↓";
     button.disabled = !enabled;
     var slot = plan.slots[index] || {};
-    var item = side === "amazon" ? slot.amazon : (slot.ml || slot.shopee || slot.extra);
+    var item = side === "amazon" ? slot.amazon : (slot.ml || slot.shopee || slot.magalu || slot.extra);
     button.setAttribute("aria-label", (step < 0 ? "Subir " : "Descer ") + ((item && item.title) || ""));
     button.addEventListener("click", function (event) {
       event.stopPropagation();
@@ -687,7 +696,7 @@ _SCRIPT = r"""
   function renderBar() {
     var slots = plan.slots || [];
     var both = slots.filter(function (slot) {
-      return [slot.amazon, slot.ml, slot.shopee, slot.extra].filter(Boolean).length > 1;
+      return [slot.amazon, slot.ml, slot.shopee, slot.magalu, slot.extra].filter(Boolean).length > 1;
     }).length;
     $("summary").innerHTML =
       slots.length + " horários · " + both + " com as duas lojas · " +
@@ -760,6 +769,7 @@ _SCRIPT = r"""
   $("store-amazon").addEventListener("click", function () { chooseStore("amazon"); });
   $("store-ml").addEventListener("click", function () { chooseStore("ml"); });
   $("store-shopee").addEventListener("click", function () { chooseStore("shopee"); });
+  $("store-magalu").addEventListener("click", function () { chooseStore("magalu"); });
   $("q").addEventListener("input", function () { state.q = $("q").value; state.shown = 24; renderCards(); });
   $("sort-by").addEventListener("change", function () { state.sort = $("sort-by").value; renderCards(); });
   document.querySelectorAll(".seg button").forEach(function (button) {
@@ -1043,12 +1053,16 @@ def render_curation(
     shopee_books: list[CatalogBook] | None = None,
     shopee_file: str = "",
     shopee_captured: str = "",
+    magalu_books: list[CatalogBook] | None = None,
+    magalu_file: str = "",
+    magalu_captured: str = "",
 ) -> str:
     del marked, amazon_marked, ml_marked
-    loja = store if store in {"ml", "shopee"} else "amazon"
+    loja = store if store in {"ml", "shopee", "magalu"} else "amazon"
     amazon = amazon_books if amazon_books is not None else (books if loja == "amazon" else [])
     mercado = ml_books if ml_books is not None else (books if loja == "ml" else [])
     shopee = shopee_books if shopee_books is not None else (books if loja == "shopee" else [])
+    magalu = magalu_books if magalu_books is not None else (books if loja == "magalu" else [])
     photos = covers or {}
 
     def second(book: CatalogBook, kind: str) -> dict:
@@ -1070,6 +1084,7 @@ def render_curation(
         ],
         "ml": [second(book, "ml") for book in mercado],
         "shopee": [second(book, "shopee") for book in shopee],
+        "magalu": [second(book, "magalu") for book in magalu],
     }
     raw = json.dumps(payload, ensure_ascii=False).replace("<", "\\u003c")
     grade = clocks or (payload["plan"].get("clocks") if isinstance(payload["plan"], dict) else []) or []
@@ -1089,6 +1104,7 @@ def render_curation(
     amazon_cap = amazon_captured or (captured if loja == "amazon" else "")
     ml_cap = ml_captured or (captured if loja == "ml" else "")
     shopee_cap = shopee_captured or (captured if loja == "shopee" else "")
+    magalu_cap = magalu_captured or (captured if loja == "magalu" else "")
     body = f"""
     <header class="curation-head">
       <div>
@@ -1138,6 +1154,12 @@ def render_curation(
         <span><b></b></span>
         <span class="captured">Capturado em {escape(shopee_cap or "—")}</span>
         <span class="file">{escape(shopee_file)}</span>
+      </button>
+      <button type="button" id="store-magalu" class="store-magalu" aria-pressed="{str(loja == 'magalu').lower()}">
+        <strong>Magazine Luiza</strong>
+        <span><b></b></span>
+        <span class="captured">Capturado em {escape(magalu_cap or "—")}</span>
+        <span class="file">{escape(magalu_file)}</span>
       </button>
     </div>
     <div class="curation-layout">
@@ -1259,7 +1281,7 @@ def render_curation(
 
 def _public(book: CatalogBook, store: str, covers: dict[str, str], photos_ready: bool, peer: str = "") -> dict:
     remote = covers.get(book.asin, "")
-    if store in {"ml", "shopee"} and book.image_url:
+    if store in {"ml", "shopee", "magalu"} and book.image_url:
         image = book.image_url
     elif store == "shopee":
         image = ""

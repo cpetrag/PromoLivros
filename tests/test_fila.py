@@ -101,6 +101,16 @@ class PareamentoTests(unittest.TestCase):
         self.assertIsNone(fila.slots[1].ml)
         self.assertEqual(fila.slots[1].shopee.title, "Cá")
 
+    def test_magalu_divide_a_segunda_metade_com_o_mercado_livre(self) -> None:
+        amazon = [_item("B000000001", "Um"), _item("B000000002", "Dois")]
+        mercado = [_item("MLB1111111", "Lá", store="ml")]
+        magalu = [_item("jf7k9gad9", "Magalu", store="magalu")]
+        fila = montar_fila(amazon, mercado, _opcoes("mine"), magalu=magalu)
+        self.assertEqual(fila.slots[0].ml.title, "Lá")
+        self.assertIsNone(fila.slots[0].magalu)
+        self.assertIsNone(fila.slots[1].ml)
+        self.assertEqual(fila.slots[1].magalu.title, "Magalu")
+
     def test_sobras_ficam_fora_dos_horarios(self) -> None:
         amazon = [_item(f"B00000000{n}", f"Livro {n}") for n in range(3)]
         opcoes = OpcoesFila("15:00", "07:00", "23:40", 25, horarios=("15:20",))

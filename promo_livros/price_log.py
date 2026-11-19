@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-STORES = ("ml", "shopee")
+STORES = ("ml", "shopee", "magalu")
 WINDOW_DAYS = 365
 # Com menos dias que isso, "menor preço" seria só "o preço de ontem" e enganaria quem escolhe.
 MIN_HISTORY_DAYS = 7
@@ -18,6 +18,7 @@ _MAX_ROWS = 200_000
 _IDS = {
     "ml": re.compile(r"^MLB\d{6,14}$"),
     "shopee": re.compile(r"^\d{5,12}\.\d{5,14}$"),
+    "magalu": re.compile(r"^[a-z0-9][a-z0-9-]{3,31}$"),
 }
 _DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _TIMEZONE = "America/Sao_Paulo"
@@ -89,12 +90,17 @@ def parse_history_csv(text: str) -> list[PricePoint]:
     for index, raw in enumerate(reader, start=2):
         row = {(key or "").strip().casefold(): (value or "").strip() for key, value in raw.items() if key}
         store = row.get("loja", "").casefold()
-        product_id = row.get("id", "").upper() if store == "ml" else row.get("id", "").replace(" ", "")
+        if store == "ml":
+            product_id = row.get("id", "").upper()
+        elif store == "magalu":
+            product_id = row.get("id", "").lower()
+        else:
+            product_id = row.get("id", "").replace(" ", "")
         day = row.get("data", "")
         price = _cents(row.get("preco"))
         listed = _cents(row.get("preco_de")) if row.get("preco_de") else None
         if store not in STORES:
-            errors.append(f"Linha {index}: loja precisa ser ml ou shopee.")
+            errors.append(f"Linha {index}: loja precisa ser ml, shopee ou magalu.")
         elif not valid_product_id(store, product_id):
             errors.append(f"Linha {index}: id {product_id or '(vazio)'} não é da loja {store}.")
         elif not _valid_day(day):

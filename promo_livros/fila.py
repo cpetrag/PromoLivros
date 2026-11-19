@@ -43,6 +43,8 @@ class SlotFila:
     ml_avisos: tuple[str, ...] = ()
     shopee: ItemFila | None = None
     shopee_avisos: tuple[str, ...] = ()
+    magalu: ItemFila | None = None
+    magalu_avisos: tuple[str, ...] = ()
     # Segunda oferta da mesma loja. Fica vazio quando o post tem uma oferta, ou duas de lojas diferentes.
     extra: ItemFila | None = None
     extra_avisos: tuple[str, ...] = ()
@@ -81,16 +83,17 @@ def montar_fila(
     mercado: list[ItemFila],
     opcoes: OpcoesFila,
     shopee: list[ItemFila] | None = None,
+    magalu: list[ItemFila] | None = None,
 ) -> FilaMontada:
     """Uma fila para o que ainda cabe hoje. Enviado na janela não entra. Sobra não some: volta em `sobras`.
 
-    O post leva no máximo duas lojas, então Shopee divide a segunda metade com o Mercado Livre.
+    O post leva no máximo duas lojas, então Shopee e Magalu dividem a segunda metade com o Mercado Livre.
     """
     clocks = list(opcoes.horarios) if opcoes.horarios is not None else horarios_livres(
         opcoes.inicio, opcoes.fim, opcoes.intervalo, opcoes.agora
     )
     az_ok, az_block = _separar(amazon, opcoes.enviados)
-    ml_ok, ml_block = _separar([*mercado, *(shopee or [])], opcoes.enviados)
+    ml_ok, ml_block = _separar([*mercado, *(shopee or []), *(magalu or [])], opcoes.enviados)
     az = _preparar(az_ok, opcoes.ordem)
     ml = _preparar(ml_ok, opcoes.ordem)
     if opcoes.ordem_manual is not None:
@@ -103,6 +106,7 @@ def montar_fila(
             az[index] if index < len(az) else None,
             _da_loja(ml, index, "ml"),
             shopee=_da_loja(ml, index, "shopee"),
+            magalu=_da_loja(ml, index, "magalu"),
         )
         for index in range(usados)
     )
@@ -184,7 +188,7 @@ def item_de_livro(book) -> ItemFila:
         discount = round((listed - price) * 100 / listed)
     state = getattr(book, "pick_state", "") or ""
     raw_store = getattr(book, "store", "amazon") or "amazon"
-    store = raw_store if raw_store in {"amazon", "ml", "shopee"} else "amazon"
+    store = raw_store if raw_store in {"amazon", "ml", "shopee", "magalu"} else "amazon"
     return ItemFila(
         id=str(book.asin),
         title=str(book.title),
@@ -293,6 +297,8 @@ def _avisos(slots: tuple[SlotFila, ...], obras_enviadas: tuple[tuple[str, str], 
             placed.append((index, "ml", slot.ml))
         if slot.shopee is not None:
             placed.append((index, "shopee", slot.shopee))
+        if slot.magalu is not None:
+            placed.append((index, "magalu", slot.magalu))
         if slot.extra is not None:
             placed.append((index, "extra", slot.extra))
     notes: dict[tuple[int, str], list[str]] = {}
@@ -340,6 +346,8 @@ def _avisos(slots: tuple[SlotFila, ...], obras_enviadas: tuple[tuple[str, str], 
                 tuple(notes.get((index, "ml"), ())),
                 slot.shopee,
                 tuple(notes.get((index, "shopee"), ())),
+                slot.magalu,
+                tuple(notes.get((index, "magalu"), ())),
                 slot.extra,
                 tuple(notes.get((index, "extra"), ())),
             )

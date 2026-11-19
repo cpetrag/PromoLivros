@@ -15,6 +15,13 @@ def _post(post_id, clock, status="scheduled", shelf=()):
 AMAZON = FeedBook("Duna <1>", 4990, 40.0, "https://www.amazon.com.br/dp/B0", "B0ABCDEFGH")
 SHOPEE = FeedBook("Torto Arado", 2990, 25.0, "https://s.shopee.com.br/abc", "123456.7890123")
 ML = FeedBook("Sapiens", 3990, None, "https://www.mercadolivre.com.br/p/MLB1", "MLB12345")
+MAGALU = FeedBook(
+    "Livro Magalu",
+    2990,
+    20.0,
+    "https://www.magazineluiza.com.br/livro/p/jf7k9gad9/sku/",
+    "jf7k9gad9",
+)
 
 
 class StoreOfTests(unittest.TestCase):
@@ -22,11 +29,16 @@ class StoreOfTests(unittest.TestCase):
         self.assertEqual(store_of(AMAZON), "amazon")
         self.assertEqual(store_of(SHOPEE), "shopee")
         self.assertEqual(store_of(ML), "ml")
+        self.assertEqual(store_of(MAGALU), "magalu")
 
 
 class RenderGridTests(unittest.TestCase):
     def setUp(self):
         self.schedule = SendSchedule(start="09:00", end="22:00", post_interval_minutes=40, group_gap_seconds=45)
+
+    def test_row_shows_magalu_tag(self):
+        html = render_grid([_post(2, "11:00", shelf=(AMAZON, MAGALU))], self.schedule, "08:00")
+        self.assertIn('grid-tag magalu">Magazine Luiza', html)
 
     def test_row_pairs_amazon_with_second_store_and_escapes(self):
         html = render_grid([_post(1, "10:00", shelf=(AMAZON, SHOPEE))], self.schedule, "08:00")

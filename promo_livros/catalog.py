@@ -23,9 +23,10 @@ from promo_livros.post_card import download_image, render_card
 from promo_livros.post_copy import render_caption
 from promo_livros.price_log import KEEP_DAYS, PriceLow, PricePoint, lowest_since, today_iso, valid_product_id, window_start
 from promo_livros.price_log import STORES as PRICE_STORES
+from promo_livros.magalu_links import is_magalu_url, magalu_product_id
 from promo_livros.shopee_links import SHOPEE_ID, is_shopee_url
 
-_STORE_ORDER = {"amazon": 0, "ml": 1, "shopee": 2}
+_STORE_ORDER = {"amazon": 0, "ml": 1, "shopee": 2, "magalu": 3}
 
 _ASIN = re.compile(r"^[A-Z0-9]{10}$")
 _ML_ID = re.compile(r"^MLB\d{6,14}$")
@@ -33,6 +34,7 @@ _REQUIRED = ("asin", "titulo", "menor_preco_365")
 _FOLDER_NAME = "CSV Atualizado"
 _ML_FILE = "mercadolivre-livros.csv"
 _SHOPEE_FILE = "shopee-livros.csv"
+_MAGALU_FILE = "magalu-livros.csv"
 
 
 @dataclass(frozen=True)
@@ -260,8 +262,17 @@ class CatalogStore:
             raise CatalogError("O CSV não tem livro da Shopee com id shopid.itemid, título e preço.")
         return self._replace_second("shopee", books, rows, source, day)
 
+    def replace_magalu(self, rows: list[dict[str, str]], source: str, *, day: str | None = None) -> int:
+        books = parse_rows(rows, kind="magalu")
+        if not books:
+            raise CatalogError("O CSV não tem livro da Magazine Luiza com id e link válidos.")
+        return self._replace_second("magalu", books, rows, source, day)
+
     def shopee_source_name(self) -> str:
         return self._meta("shopee_source") or ""
+
+    def magalu_source_name(self) -> str:
+        return self._meta("magalu_source") or ""
 
     def _replace_second(
         self, store: str, books: list[CatalogBook], rows: list[dict[str, str]], source: str, day: str | None
@@ -296,7 +307,8 @@ class CatalogStore:
                     if book.price_cents
                 ]
             )
-            self._remember("ml_source" if store == "ml" else "shopee_source", source)
+            meta_key = {"ml": "ml_source", "shopee": "shopee_source", "magalu": "magalu_source"}[store]
+            self._remember(meta_key, source)
         return len(books)
 
     def record_price_points(self, points: list[PricePoint]) -> int:
@@ -392,13 +404,13 @@ class CatalogStore:
     def ml_image(self, item_id: str) -> str:
         row = self._connection.execute(
             "SELECT image_url FROM ml_books WHERE asin = ?",
-            (item_id.strip().upper(),),
+            (_second_store_key(item_id),),
         ).fetchone()
         return str(row["image_url"] or "") if row is not None else ""
 
     def find_book(self, key: str) -> CatalogBook | None:
         """Acha o livro pelo ASIN, pelo id MLB ou pelo shopid.itemid. O CSV do dia já traz título, preço e capa."""
-        item = (key or "").strip().upper()
+        item = _catalog_key(key)
         if not item:
             return None
         mercado = _in_second_store(item)
@@ -461,10 +473,10 @@ class CatalogStore:
         """Troca de lugar com o marcado vizinho da mesma loja. Isso muda com quem ele forma par."""
         if direction not in (-1, 1):
             return False
-        second = store in {"ml", "shopee"}
+        second = store in {"ml", "shopee", "magalu"}
         table = "ml_books" if second else "catalog_books"
         order = [book.asin for book in self._picked_in(table, store="ml" if second else "amazon")]
-        key = asin.strip().upper()
+        key = _second_store_key(asin) if second else asin.strip().upper()
         if key not in order:
             return False
         place = order.index(key)
@@ -495,7 +507,7 @@ class CatalogStore:
         return self.picked_total()
 
     def set_ml_picked(self, item_id: str, picked: bool, day: str = "") -> int:
-        key = item_id.strip().upper()
+        key = _second_store_key(item_id)
         if not _in_second_store(key):
             raise CatalogError("Anúncio inválido.")
         self._write_pick("ml_books", key, picked, day)
@@ -527,8 +539,8 @@ class CatalogStore:
 
     def annotate_kids(self, rows: list[dict[str, str]], kind: str = "amazon") -> int:
         """Marca infantil e o que não é livro, sem mexer na seleção."""
-        books = parse_rows(rows, kind=kind if kind in {"ml", "shopee"} else "amazon")
-        table = "ml_books" if kind in {"ml", "shopee"} else "catalog_books"
+        books = parse_rows(rows, kind=kind if kind in {"ml", "shopee", "magalu"} else "amazon")
+        table = "ml_books" if kind in {"ml", "shopee", "magalu"} else "catalog_books"
         with self._connection:
             self._connection.executemany(
                 f"UPDATE {table} SET kids = ?, not_book = ? WHERE asin = ?",
@@ -567,7 +579,7 @@ class CatalogStore:
         return changed
 
     def mark_enviado(self, product_id: str, day: str) -> None:
-        key = (product_id or "").strip().upper()
+        key = _second_store_key(product_id) if _in_second_store(product_id) else (product_id or "").strip().upper()
         if not key:
             return
         with self._connection:
@@ -598,7 +610,7 @@ class CatalogStore:
                 self._set_state(store, asin, "enviado", today, picked=False)
 
     def _set_state(self, store: str, asin: str, state: str, day: str, *, picked: bool) -> None:
-        table = "ml_books" if store in {"ml", "shopee"} else "catalog_books"
+        table = "ml_books" if store in {"ml", "shopee", "magalu"} else "catalog_books"
         self._connection.execute(
             f"""
             UPDATE {table}
@@ -636,7 +648,7 @@ class CatalogStore:
                 "UPDATE ml_books SET picked = 0, pick_seq = 0, pick_state = '', pick_day = ''"
             )
             for row in rows:
-                table = "ml_books" if row["store"] in {"ml", "shopee"} else "catalog_books"
+                table = "ml_books" if row["store"] in {"ml", "shopee", "magalu"} else "catalog_books"
                 self._connection.execute(
                     f"""
                     UPDATE {table}
@@ -650,7 +662,7 @@ class CatalogStore:
         """Devolve marcações sem apagar as outras."""
         with self._connection:
             for row in rows:
-                table = "ml_books" if row["store"] in {"ml", "shopee"} else "catalog_books"
+                table = "ml_books" if row["store"] in {"ml", "shopee", "magalu"} else "catalog_books"
                 self._connection.execute(
                     f"""
                     UPDATE {table}
@@ -857,7 +869,7 @@ class CatalogStore:
     def mover_caixa(self, product_id: str, step: int) -> bool:
         if step not in (-1, 1):
             return False
-        key = product_id.strip().upper()
+        key = _catalog_key(product_id)
         table = "ml_books" if _in_second_store(key) else "catalog_books"
         order = [book.asin for book in self._caixa_in(table, store="ml" if table == "ml_books" else "amazon")]
         if key not in order:
@@ -953,13 +965,28 @@ def parse_rows(rows: list[dict[str, str]], *, kind: str = "amazon") -> list[Cata
     seen: set[str] = set()
     mercado = kind == "ml"
     shopee = kind == "shopee"
-    pattern = _ML_ID if mercado else SHOPEE_ID if shopee else _ASIN
+    magalu = kind == "magalu"
+    pattern = _ML_ID if mercado else SHOPEE_ID if shopee else _ASIN if not magalu else None
     for index, row in enumerate(rows, start=1):
-        asin = (row.get("asin") or "").strip().upper().replace(" ", "")
-        title = (row.get("titulo") or "").strip()
-        if pattern.fullmatch(asin) is None or not title or asin in seen:
-            continue
         raw_url = (row.get("link") or "").strip()
+        title = (row.get("titulo") or "").strip()
+        if magalu:
+            linked_id = magalu_product_id(raw_url)
+            raw_asin = (row.get("asin") or "").strip()
+            if (
+                not title
+                or not is_magalu_url(raw_url)
+                or not linked_id
+                or raw_asin.casefold() != linked_id.casefold()
+            ):
+                continue
+            asin = linked_id
+        else:
+            asin = (row.get("asin") or "").strip().upper().replace(" ", "")
+            if pattern is None or pattern.fullmatch(asin) is None or not title:
+                continue
+        if asin in seen:
+            continue
         if shopee:
             # Link de outro anúncio postaria o produto errado: a linha sai.
             linked = shopee_link_id(raw_url)
@@ -972,8 +999,22 @@ def parse_rows(rows: list[dict[str, str]], *, kind: str = "amazon") -> list[Cata
         elif shopee:
             shop_id, item_id = asin.split(".")
             url = f"https://shopee.com.br/product/{shop_id}/{item_id}"
+        elif magalu:
+            url = raw_url
         else:
             url = raw_url or f"https://www.amazon.com.br/dp/{asin}"
+        if magalu:
+            image = magalu_picture(row.get("imagem"))
+            store = "magalu"
+        elif mercado:
+            image = ml_picture(row.get("imagem"))
+            store = "ml"
+        elif shopee:
+            image = shopee_picture(row.get("imagem"))
+            store = "shopee"
+        else:
+            image = ""
+            store = "amazon"
         books.append(
             CatalogBook(
                 asin=asin,
@@ -986,8 +1027,8 @@ def parse_rows(rows: list[dict[str, str]], *, kind: str = "amazon") -> list[Cata
                 low_365=(row.get("menor_preco_365") or "").casefold() == "sim",
                 url=url,
                 picked=False,
-                store="ml" if mercado else "shopee" if shopee else "amazon",
-                image_url=ml_picture(row.get("imagem")) if mercado else shopee_picture(row.get("imagem")) if shopee else "",
+                store=store,
+                image_url=image,
                 kids=_is_kids(row),
                 not_book=_is_not_book(row),
             )
@@ -1018,6 +1059,11 @@ def shopee_picture(value: str | None) -> str:
     return url if _SHOPEE_PICTURE.fullmatch(url) else ""
 
 
+def magalu_picture(value: str | None) -> str:
+    url = (value or "").strip().replace("http://", "https://", 1).split("?")[0]
+    return url if url.startswith("https://") else ""
+
+
 def shopee_link_id(url: str | None) -> str:
     """shopid.itemid do link da Shopee, ou vazio quando o link não é de produto."""
     text = (url or "").strip()
@@ -1029,9 +1075,15 @@ def shopee_link_id(url: str | None) -> str:
 
 
 def catalog_kind(rows: list[dict[str, str]]) -> str:
-    counts = {"ml": 0, "shopee": 0, "amazon": 0}
+    counts = {"ml": 0, "shopee": 0, "amazon": 0, "magalu": 0}
     for row in rows:
-        item = (row.get("asin") or "").strip().upper()
+        link = (row.get("link") or "").strip()
+        linked_id = magalu_product_id(link) if is_magalu_url(link) else ""
+        raw_asin = (row.get("asin") or "").strip()
+        if linked_id and raw_asin.casefold() == linked_id.casefold():
+            counts["magalu"] += 1
+            continue
+        item = raw_asin.upper()
         if _ML_ID.fullmatch(item):
             counts["ml"] += 1
         elif SHOPEE_ID.fullmatch(item):
@@ -1161,6 +1213,21 @@ def shopee_csv(folder: Path) -> Path | None:
     return max(files, key=lambda path: path.name) if files else None
 
 
+def magalu_csv(folder: Path) -> Path | None:
+    if not folder.is_dir():
+        return None
+    preferred = folder / _MAGALU_FILE
+    if preferred.is_file():
+        return preferred
+    files = [
+        path
+        for pattern in ("magalu-livros-*.csv", "magalu_livros_*.csv")
+        for path in folder.glob(pattern)
+        if path.is_file()
+    ]
+    return max(files, key=lambda path: path.name) if files else None
+
+
 def load_csv_file(path: Path) -> str:
     resolved = path.resolve()
     if resolved.parent.name != _FOLDER_NAME or resolved.suffix.casefold() != ".csv":
@@ -1280,6 +1347,10 @@ def publish_selection(
     for slot in fila.slots:
         book = by_id.get(slot.amazon.id) if slot.amazon else None
         alt = by_id.get(slot.ml.id) if slot.ml else None
+        if alt is None and slot.shopee is not None:
+            alt = by_id.get(slot.shopee.id)
+        if alt is None and slot.magalu is not None:
+            alt = by_id.get(slot.magalu.id)
         if book is None and alt is not None:
             book, alt = alt, None
         if book is not None:
@@ -1304,7 +1375,12 @@ def publish_selection(
     )
     tomorrow = (date.fromisoformat(day) + timedelta(days=1)).isoformat()
     catalog.aplicar_estados(
-        [(item.store, item.id) for slot in fila.slots for item in (slot.amazon, slot.ml) if item],
+        [
+            (item.store, item.id)
+            for slot in fila.slots
+            for item in (slot.amazon, slot.ml, slot.shopee, slot.magalu, slot.extra)
+            if item
+        ],
         [(item.store, item.id) for item in fila.sobras],
         [(item.item.store, item.item.id) for item in fila.bloqueados],
         day,
@@ -1342,8 +1418,9 @@ def _publish_fixed(
         amazon = by_id.get(slot.get("amazon") or "")
         mercado = by_id.get(slot.get("ml") or "")
         shopee = by_id.get(slot.get("shopee") or "")
+        magalu = by_id.get(slot.get("magalu") or "")
         extra = by_id.get(slot.get("extra") or "")
-        items = [item for item in (amazon, mercado, shopee, extra) if item is not None]
+        items = [item for item in (amazon, mercado, shopee, magalu, extra) if item is not None]
         if not items:
             raise CatalogError("A prévia cita um livro que não está mais no catálogo. Peça outra prévia.")
         book = items[0]
@@ -1351,7 +1428,9 @@ def _publish_fixed(
         pairs.append((book, alt))
         clocks.append(slot["clock"])
         for item in items:
-            na_fila.append((item.store if item.store in {"amazon", "ml", "shopee"} else "amazon", item.asin))
+            na_fila.append(
+                (item.store if item.store in {"amazon", "ml", "shopee", "magalu"} else "amazon", item.asin)
+            )
     if not pairs:
         raise CatalogError("Marque pelo menos um livro com preço.")
     notice = _gravar_posts(
@@ -1418,7 +1497,8 @@ def _gravar_posts(
     else:
         store.cancel_day(day)
     cards_dir.mkdir(parents=True, exist_ok=True)
-    for index, ((book, alt, covers), clock) in enumerate(zip(prepared, clocks)):
+    for index, ((book, alt, pair), clock) in enumerate(zip(prepared, clocks)):
+        covers, stores = pair
         rows = _store_rows(book, alt, primary_urls[index], alt_urls[index])
         payloads = [_payload(item, url, _safe_describe(describe, item)) for item, url in rows]
         post_id = store.add_post(
@@ -1428,7 +1508,7 @@ def _gravar_posts(
             image_path="",
             books=[_board_book(payload) for payload in payloads],
         )
-        render_card(covers, cards_dir / f"{post_id}.jpg")
+        render_card(covers, cards_dir / f"{post_id}.jpg", stores=stores)
         for image in covers:
             image.close()
         store.set_image(post_id, f"data/cards/{post_id}.jpg")
@@ -1445,12 +1525,16 @@ def _fetch_cover(asin: str, download) -> Image.Image:
         return Image.new("RGB", (280, 400), (245, 241, 232))
 
 
-def _covers_for(book: CatalogBook, alt: CatalogBook | None, download, thumbnail) -> list[Image.Image]:
+def _covers_for(
+    book: CatalogBook, alt: CatalogBook | None, download, thumbnail
+) -> tuple[list[Image.Image], list[str]]:
     items = [book]
     if alt is not None:
         items.append(alt)
     items.sort(key=lambda item: _STORE_ORDER.get(item.store, 9))
-    return [_one_cover(item, download, thumbnail) for item in items]
+    covers = [_one_cover(item, download, thumbnail) for item in items]
+    stores = [item.store for item in items]
+    return covers, stores
 
 
 def _one_cover(book: CatalogBook, download, thumbnail) -> Image.Image:
@@ -1495,14 +1579,38 @@ def _resolve_mixed(urls: list[str], resolve_amazon, resolve_ml, resolve_shopee=N
     return result
 
 
+def _second_store_key(product_id: str) -> str:
+    key = (product_id or "").strip()
+    upper = key.upper().replace(" ", "")
+    if _ML_ID.fullmatch(upper):
+        return upper
+    if SHOPEE_ID.fullmatch(key) or SHOPEE_ID.fullmatch(upper):
+        return upper
+    return key.casefold()
+
+
 def _second_store_of(product_id: str) -> str:
-    """ml_books guarda as duas segundas lojas; o formato do id diz qual é."""
-    return "shopee" if SHOPEE_ID.fullmatch(product_id or "") else "ml"
+    """ml_books guarda as segundas lojas; o formato do id diz qual é."""
+    key = (product_id or "").strip()
+    if SHOPEE_ID.fullmatch(key):
+        return "shopee"
+    if _ML_ID.fullmatch(key.upper()):
+        return "ml"
+    return "magalu"
+
+
+def _catalog_key(product_id: str) -> str:
+    # catalog_books guarda o ASIN em maiúsculas; só as segundas lojas usam a chave casefold.
+    if _in_second_store(product_id):
+        return _second_store_key(product_id)
+    return (product_id or "").strip().upper()
 
 
 def _in_second_store(product_id: str) -> bool:
-    key = (product_id or "").strip().upper()
-    return bool(_ML_ID.fullmatch(key) or SHOPEE_ID.fullmatch(key))
+    key = _second_store_key(product_id)
+    if _ML_ID.fullmatch(key.upper()) or SHOPEE_ID.fullmatch(key):
+        return True
+    return bool(key) and _ASIN.fullmatch(key.upper()) is None
 
 
 def _book(row: sqlite3.Row, *, store: str = "amazon") -> CatalogBook:

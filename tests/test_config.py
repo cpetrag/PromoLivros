@@ -45,6 +45,10 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.shopee_app_id, "")
         self.assertEqual(config.shopee_secret, "")
         self.assertEqual(config.shopee_sub_id, "promolivros")
+        self.assertEqual(config.magalu_promoter_id, "")
+        self.assertEqual(config.magalu_partner_id, "")
+        self.assertEqual(config.aqui_api_key, "")
+        self.assertEqual(config.aqui_base_url, "https://aqui.descontos.ai")
 
     def test_shipped_file_loads(self) -> None:
         path = Path(__file__).resolve().parents[1] / "config.yaml"
@@ -84,6 +88,25 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.shopee_app_id, "123456")
         self.assertEqual(config.shopee_secret, "secret-test")
         self.assertEqual(config.shopee_sub_id, "promolivros")
+
+    def test_loads_magalu_and_aqui_from_env(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            config = load_sample(
+                Path(folder),
+                MAGALU_PROMOTER_ID="promoter-x",
+                MAGALU_PARTNER_ID="partner-y",
+                AQUI_API_KEY="aqui_key",
+                AQUI_BASE_URL="https://aqui.descontos.ai/",  # trailing slash must be stripped
+            )
+        self.assertEqual(config.magalu_promoter_id, "promoter-x")
+        self.assertEqual(config.magalu_partner_id, "partner-y")
+        self.assertEqual(config.aqui_api_key, "aqui_key")
+        self.assertEqual(config.aqui_base_url, "https://aqui.descontos.ai")
+
+    def test_rejects_invalid_aqui_base_url(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaises(ConfigError):
+                load_sample(Path(folder), AQUI_BASE_URL="not-a-url")
 
 
 if __name__ == "__main__":

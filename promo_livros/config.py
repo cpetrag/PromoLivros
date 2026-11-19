@@ -125,6 +125,10 @@ def _build(raw: Mapping, environ: Mapping[str, str], root: Path) -> AppConfig:
         shopee_app_id=environ.get("SHOPEE_APP_ID", "").strip(),
         shopee_secret=environ.get("SHOPEE_SECRET", "").strip(),
         shopee_sub_id=_shopee_sub_id(environ),
+        magalu_promoter_id=environ.get("MAGALU_PROMOTER_ID", "").strip(),
+        magalu_partner_id=environ.get("MAGALU_PARTNER_ID", "").strip(),
+        aqui_api_key=environ.get("AQUI_API_KEY", "").strip(),
+        aqui_base_url=_aqui_base_url(environ),
     )
 
 
@@ -140,6 +144,14 @@ def _amz_link_api_url(environ: Mapping[str, str]) -> str:
     parsed = urlsplit(raw)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ConfigError("AMZ_LINK_API_URL precisa ser um endereço http ou https.")
+    return raw.rstrip("/")
+
+
+def _aqui_base_url(environ: Mapping[str, str]) -> str:
+    raw = environ.get("AQUI_BASE_URL", "").strip() or "https://aqui.descontos.ai"
+    parsed = urlsplit(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ConfigError("AQUI_BASE_URL precisa ser um endereço http ou https.")
     return raw.rstrip("/")
 
 

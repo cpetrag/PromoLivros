@@ -914,9 +914,15 @@ def _int_field(form: dict[str, list[str]], name: str) -> int:
         return 0
 
 
+class DashboardServer(ThreadingHTTPServer):
+    # A Curadoria pede dezenas de capas de uma vez; com a fila padrão (5) o túnel leva timeout e devolve 502.
+    request_queue_size = 128
+    daemon_threads = True
+
+
 def serve(app: DashboardApp) -> None:
     DashboardHandler.app = app
-    server = ThreadingHTTPServer((HOST, PORT), DashboardHandler)
+    server = DashboardServer((HOST, PORT), DashboardHandler)
     server.serve_forever()
 
 
@@ -1403,6 +1409,7 @@ def build_app(config, username: str, password: str) -> DashboardApp:
         parse_csv,
         publish_selection,
         shopee_csv,
+        magalu_csv,
         split_store_posts,
         fill_blurbs,
     )
@@ -1449,6 +1456,11 @@ def build_app(config, username: str, password: str) -> DashboardApp:
         notes.extend(
             _reload_catalog(
                 shopee_csv(catalog_folder), catalog.replace_shopee, "shopee_source_stamp", lambda: _second_marks("shopee")
+            )
+        )
+        notes.extend(
+            _reload_catalog(
+                magalu_csv(catalog_folder), catalog.replace_magalu, "magalu_source_stamp", lambda: _second_marks("magalu")
             )
         )
         _tag_kids(found, "amazon", "kids_stamp_v3")
@@ -1510,6 +1522,7 @@ def build_app(config, username: str, password: str) -> DashboardApp:
         found = latest_csv(catalog_folder)
         mercado = mercado_livre_csv(catalog_folder)
         shopee_file = shopee_csv(catalog_folder)
+        magalu_file = magalu_csv(catalog_folder)
         from promo_livros.fila import horarios_livres
         from promo_livros.fila_aplicar import previa
 
@@ -1518,14 +1531,17 @@ def build_app(config, username: str, password: str) -> DashboardApp:
         agora = now.strftime("%H:%M")
         clocks = horarios_livres(schedule.start, schedule.end, schedule.post_interval_minutes, agora)
         ordem = board_store.setting("curation_order") or "mine"
-        store = {"mercadolivre": "ml", "shopee": "shopee"}.get(loja, "amazon")
+        store = {"mercadolivre": "ml", "shopee": "shopee", "magalu": "magalu", "magazineluiza": "magalu"}.get(
+            loja, "amazon"
+        )
         amazon_books = catalog.books()
         second_books = catalog.ml_books()
         ml_books = [book for book in second_books if book.store == "ml"]
         shopee_books = [book for book in second_books if book.store == "shopee"]
-        books = {"ml": ml_books, "shopee": shopee_books}.get(store, amazon_books)
+        magalu_books = [book for book in second_books if book.store == "magalu"]
+        books = {"ml": ml_books, "shopee": shopee_books, "magalu": magalu_books}.get(store, amazon_books)
         index = TitleIndex(amazon_books, second_books)
-        store_names = {"ml": "no Mercado Livre", "shopee": "na Shopee"}
+        store_names = {"ml": "no Mercado Livre", "shopee": "na Shopee", "magalu": "na Magazine Luiza"}
         peers = {}
         covers = {}
         for book in books:
@@ -1537,8 +1553,8 @@ def build_app(config, username: str, password: str) -> DashboardApp:
             peers[book.asin] = f"Existe {where}{price}"
             if store == "ml":
                 covers[book.asin] = cover_url(peer.asin)
-        active_file = {"ml": mercado, "shopee": shopee_file}.get(store, found)
-        sources = {"ml": catalog.ml_source_name, "shopee": catalog.shopee_source_name}
+        active_file = {"ml": mercado, "shopee": shopee_file, "magalu": magalu_file}.get(store, found)
+        sources = {"ml": catalog.ml_source_name, "shopee": catalog.shopee_source_name, "magalu": catalog.magalu_source_name}
         return render_curation(
             books,
             source=sources.get(store, catalog.source_name)(),
@@ -1558,13 +1574,17 @@ def build_app(config, username: str, password: str) -> DashboardApp:
             amazon_books=amazon_books,
             ml_books=ml_books,
             shopee_books=shopee_books,
+            magalu_books=magalu_books,
             reviews=catalog.reviews(),
             ml_lows={
                 **catalog.price_lows("ml", {book.asin: book.price_cents for book in ml_books}),
                 **catalog.price_lows("shopee", {book.asin: book.price_cents for book in shopee_books}),
+                **catalog.price_lows("magalu", {book.asin: book.price_cents for book in magalu_books}),
             },
             shopee_file=shopee_file.name if shopee_file else "",
             shopee_captured=capture_clock(shopee_file, config.schedule.timezone) if shopee_file else "",
+            magalu_file=magalu_file.name if magalu_file else "",
+            magalu_captured=capture_clock(magalu_file, config.schedule.timezone) if magalu_file else "",
             agora=agora,
             inicio=schedule.start,
             fim=schedule.end,
@@ -1600,6 +1620,10 @@ def build_app(config, username: str, password: str) -> DashboardApp:
             marked = _second_marks("shopee")
             count = catalog.replace_shopee(rows, "arquivo do computador")
             holder["curation_notice"] = _loaded_note("CSV da Shopee carregado", count, marked)
+        elif kind == "magalu":
+            marked = _second_marks("magalu")
+            count = catalog.replace_magalu(rows, "arquivo do computador")
+            holder["curation_notice"] = _loaded_note("CSV da Magazine Luiza carregado", count, marked)
         else:
             marked = len(catalog.picked())
             count = catalog.replace(rows, "arquivo do computador")
@@ -1611,7 +1635,8 @@ def build_app(config, username: str, password: str) -> DashboardApp:
         found = latest_csv(catalog_folder)
         mercado = mercado_livre_csv(catalog_folder)
         shopee = shopee_csv(catalog_folder)
-        if found is None and mercado is None and shopee is None:
+        magalu = magalu_csv(catalog_folder)
+        if found is None and mercado is None and shopee is None and magalu is None:
             holder["curation_notice"] = "Não achei os CSVs na pasta CSV Atualizado."
             return str(holder["curation_notice"])
         if found is not None:
@@ -1623,6 +1648,10 @@ def build_app(config, username: str, password: str) -> DashboardApp:
         if shopee is not None:
             notes.append(
                 _import_folder_file(shopee, catalog.replace_shopee, "shopee_source_stamp", lambda: _second_marks("shopee"))
+            )
+        if magalu is not None:
+            notes.append(
+                _import_folder_file(magalu, catalog.replace_magalu, "magalu_source_stamp", lambda: _second_marks("magalu"))
             )
         holder["curation_notice"] = " ".join(note for note in notes if note)
         return str(holder["curation_notice"])
@@ -1695,6 +1724,7 @@ def build_app(config, username: str, password: str) -> DashboardApp:
             resolve_amazon=resolve_urls,
             resolve_ml=resolve_ml_estrito,
             resolve_shopee=resolve_shopee_estrito,
+            resolve_magalu=resolve_magalu_estrito,
             describe=book_line,
             gravar=gravar,
         )
@@ -1710,6 +1740,7 @@ def build_app(config, username: str, password: str) -> DashboardApp:
             resolve_amazon=resolve_urls,
             resolve_ml=resolve_ml_estrito,
             resolve_shopee=resolve_shopee_estrito,
+            resolve_magalu=resolve_magalu_estrito,
         )
 
     def resolve_ml_estrito(urls: list[str]) -> list[str]:
@@ -1729,16 +1760,49 @@ def build_app(config, username: str, password: str) -> DashboardApp:
             config.shopee_sub_id,
         )
 
+    def resolve_magalu_estrito(urls: list[str]) -> list[str]:
+        from promo_livros.aqui_links import AquiLinkError, create_short_link
+        from promo_livros.fila_csv import LinkQuebrado
+        from promo_livros.magalu_links import convert_magalu
+
+        if not config.magalu_promoter_id or not config.magalu_partner_id:
+            raise LinkQuebrado("Faltam credenciais da Magazine Luiza.")
+        if not config.aqui_api_key:
+            raise LinkQuebrado("Falta a chave da API do Aqui.")
+        out: list[str] = []
+        for url in urls:
+            converted = convert_magalu(
+                url,
+                promoter_id=config.magalu_promoter_id,
+                partner_id=config.magalu_partner_id,
+            )
+            if not converted.ok or not converted.link_convertido:
+                texto = " ".join((converted.erro or "").split())
+                raise LinkQuebrado(
+                    texto[:180] or "A Magazine Luiza não gerou o link de afiliado."
+                )
+            try:
+                short = create_short_link(
+                    converted.link_convertido,
+                    api_key=config.aqui_api_key,
+                    base_url=config.aqui_base_url,
+                )
+            except AquiLinkError as exc:
+                texto = " ".join(str(exc).split())
+                raise LinkQuebrado(texto[:180] or "O Aqui não encurtou o link.") from exc
+            out.append(short)
+        return out
+
     def toggle_pick(asin: str, picked: bool, loja: str = "amazon") -> dict:
         day = current_day()
-        if loja in {"ml", "shopee"}:
+        if loja in {"ml", "shopee", "magalu"}:
             total = catalog.set_ml_picked(asin, picked, day)
         else:
             total = catalog.set_picked(asin, picked, day)
         return {"picked": total, "plan": _pick_plan()}
 
     def move_pick(asin: str, loja: str, step: int) -> dict:
-        catalog.move_pick(asin, loja if loja in {"ml", "shopee"} else "amazon", step)
+        catalog.move_pick(asin, loja if loja in {"ml", "shopee", "magalu"} else "amazon", step)
         return {"picked": catalog.picked_total(), "plan": _pick_plan()}
 
     def resolve_ml(urls: list[str]) -> list[str]:
@@ -1853,7 +1917,9 @@ def build_app(config, username: str, password: str) -> DashboardApp:
         plan = preview_picks(board_store.setting("curation_order") or "mine")
         clocks = plan.get("clocks") or []
         amazon_count = sum(1 for slot in plan["slots"] if slot.get("amazon"))
-        ml_count = sum(1 for slot in plan["slots"] if slot.get("ml") or slot.get("shopee"))
+        ml_count = sum(
+            1 for slot in plan["slots"] if slot.get("ml") or slot.get("shopee") or slot.get("magalu")
+        )
         gaps = {
             "amazon": max(0, len(clocks) - amazon_count),
             "ml": max(0, len(clocks) - ml_count),

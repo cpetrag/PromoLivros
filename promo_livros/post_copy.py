@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 
 from promo_livros.formatter import format_brl
+from promo_livros.magalu_links import is_magalu_url
 from promo_livros.ml_links import is_ml_url
 from promo_livros.shopee_links import is_shopee_url
 
@@ -112,7 +113,9 @@ def signature_of(caption: str) -> str | None:
 def render_caption(books: list[dict], *, sign_index: int = 0, signature: str | None = None) -> str:
     expanded = [block for book in books for block in _expand(book)]
     label_amazon = any(
-        is_ml_url(str(book.get("url") or "")) or is_shopee_url(str(book.get("url") or ""))
+        is_ml_url(str(book.get("url") or ""))
+        or is_shopee_url(str(book.get("url") or ""))
+        or is_magalu_url(str(book.get("url") or ""))
         for book in expanded
     ) or len(expanded) > 1
     blocks = []
@@ -171,6 +174,8 @@ def _link_lines(book: dict, *, label_amazon: bool) -> list[str]:
         return [f"🔗 Mercado Livre: {url}"]
     if is_shopee_url(url):
         return [f"🔗 Shopee: {url}"]
+    if is_magalu_url(url):
+        return [f"🔗 Magazine Luiza: {url}"]
     if label_amazon:
         return [f"🔗 Amazon: {url}"]
     return [f"🔗 {url}"]

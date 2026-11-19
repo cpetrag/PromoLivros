@@ -1,4 +1,4 @@
-"""Card do post: capas originais, só reduzidas, e a logo no canto."""
+"""Card do post: capas originais, logos de loja opcionais sob cada capa, logo no canto."""
 from __future__ import annotations
 
 from io import BytesIO
@@ -9,6 +9,19 @@ from PIL import Image
 
 _LOGO = Path(__file__).resolve().parent / "assets" / "black_livros.jpg"
 _BEIGE = (245, 241, 232, 255)
+_ASSETS = Path(__file__).resolve().parent / "assets"
+_STORE_LOGOS = {
+    "amazon": _ASSETS / "store_amazon.webp",
+    "ml": _ASSETS / "store_ml.png",
+    "shopee": _ASSETS / "store_shopee.webp",
+    "magalu": _ASSETS / "store_magalu.png",
+}
+_STORE_SCALE = 0.55
+_MAGALU_SCALE = _STORE_SCALE * 0.85
+_MAGALU_EXTRA_DOWN = 12
+_STORE_GAP = 10
+# Faixa reservada sob as capas quando há logos (gap + altura típica + folga Magalu).
+_STORE_STRIP = _STORE_GAP + 56 + _MAGALU_EXTRA_DOWN
 
 
 def download_image(url: str, timeout: float = 20) -> Image.Image:
@@ -17,7 +30,45 @@ def download_image(url: str, timeout: float = 20) -> Image.Image:
     return Image.open(BytesIO(response.content)).convert("RGB")
 
 
-def render_card(covers: list[Image.Image], destination: Path, *, logo_path: Path | None = None) -> None:
+def _prepare_store_logo(path: Path, max_w: int, *, store: str) -> Image.Image:
+    source = Image.open(path).convert("RGBA")
+    pixels = source.load()
+    for y in range(source.height):
+        for x in range(source.width):
+            red, green, blue, _alpha = pixels[x, y]
+            if store == "amazon":
+                is_orange = red > 180 and 70 < green < 170 and blue < 90
+                is_ink = max(red, green, blue) < 70
+                if not (is_orange or is_ink):
+                    pixels[x, y] = (0, 0, 0, 0)
+            elif red <= 28 and green <= 28 and blue <= 28:
+                pixels[x, y] = (0, 0, 0, 0)
+    box = source.getbbox()
+    if box:
+        source = source.crop(box)
+    source.thumbnail((max_w, max_w), Image.Resampling.LANCZOS)
+    return source
+
+
+def _store_marks(fitted: list[Image.Image], stores: list[str]) -> list[Image.Image | None]:
+    marks: list[Image.Image | None] = []
+    for image, store in zip(fitted, stores):
+        path = _STORE_LOGOS.get(store)
+        if path is None or not path.is_file():
+            marks.append(None)
+            continue
+        scale = _MAGALU_SCALE if store == "magalu" else _STORE_SCALE
+        marks.append(_prepare_store_logo(path, max_w=int(image.width * scale), store=store))
+    return marks
+
+
+def render_card(
+    covers: list[Image.Image],
+    destination: Path,
+    *,
+    stores: list[str] | None = None,
+    logo_path: Path | None = None,
+) -> None:
     if not covers or len(covers) > 3:
         raise ValueError("O card leva de 1 a 3 capas.")
     side = 280 if len(covers) < 3 else 240
@@ -26,18 +77,38 @@ def render_card(covers: list[Image.Image], destination: Path, *, logo_path: Path
         image = cover.convert("RGB")
         image.thumbnail((side, side), Image.Resampling.LANCZOS)
         fitted.append(image)
+    use_stores = stores is not None and len(stores) == len(fitted)
+    marks = _store_marks(fitted, stores) if use_stores else []
     gap, margin, band = 24, 28, 78
     cover_h = max(image.height for image in fitted)
+    mark_h = 0
+    if marks:
+        mark_h = max(
+            (mark.height + (_MAGALU_EXTRA_DOWN if store == "magalu" else 0))
+            for mark, store in zip(marks, stores)
+            if mark is not None
+        ) if any(mark is not None for mark in marks) else 0
+    store_band = (_STORE_GAP + mark_h) if mark_h else 0
     row_w = sum(image.width for image in fitted) + gap * (len(fitted) - 1)
     width = max(margin * 2 + row_w, 520)
-    canvas = Image.new("RGBA", (width, cover_h + margin * 2 + band), _BEIGE)
+    if store_band:
+        height = margin + cover_h + store_band + band
+    else:
+        height = cover_h + margin * 2 + band
+    canvas = Image.new("RGBA", (width, height), _BEIGE)
     cursor = (width - row_w) // 2
-    for image in fitted:
+    for index, image in enumerate(fitted):
         top = margin + (cover_h - image.height) // 2
         canvas.paste(image.convert("RGBA"), (cursor, top))
+        if store_band and index < len(marks) and marks[index] is not None:
+            mark = marks[index]
+            down = _MAGALU_EXTRA_DOWN if stores[index] == "magalu" else 0
+            mx = cursor + (image.width - mark.width) // 2
+            my = margin + cover_h + _STORE_GAP + down
+            canvas.alpha_composite(mark, (mx, my))
         cursor += image.width + gap
-    mark = _logo(logo_path or _LOGO, 92 if len(fitted) == 1 else 100)
-    canvas.alpha_composite(mark, (canvas.width - mark.width - 18, canvas.height - mark.height - 10))
+    brand = _logo(logo_path or _LOGO, 92 if len(fitted) == 1 else 100)
+    canvas.alpha_composite(brand, (canvas.width - brand.width - 18, canvas.height - brand.height - 10))
     destination.parent.mkdir(parents=True, exist_ok=True)
     canvas.convert("RGB").save(destination, "JPEG", quality=68, optimize=True)
 
@@ -46,21 +117,35 @@ def extract_covers(card: Path, count: int) -> list[Image.Image] | None:
     """Recorta as capas de um card já feito por `render_card`.
 
     A Shopee não guarda a foto do anúncio; o card é a única cópia da capa. As capas ficam
-    lado a lado sobre o bege, com 24 px entre elas, acima da faixa da logo. Se o recorte
-    não achar exatamente `count` capas, devolve None e quem chamou busca as capas de outro jeito.
+    lado a lado sobre o bege, com 24 px entre elas, acima da faixa da logo. Cards novos
+    ainda têm logos de loja sob as capas — essa faixa é excluída. Se o recorte não achar
+    exatamente `count` capas, devolve None.
     """
-    from PIL import ImageChops
-
     if count < 1 or not card.is_file():
         return None
     margin, band, gap = 28, 78, 24
     with Image.open(card) as source:
         image = source.convert("RGB")
-    top, bottom = margin, image.height - band - margin
+    for strip in (_STORE_STRIP, 0):
+        top = margin
+        if strip:
+            bottom = image.height - band - strip
+        else:
+            bottom = image.height - band - margin
+        found = _covers_in_band(image, top, bottom, gap, count)
+        if found is not None:
+            return found
+    return None
+
+
+def _covers_in_band(
+    image: Image.Image, top: int, bottom: int, gap: int, count: int
+) -> list[Image.Image] | None:
+    from PIL import ImageChops
+
     if bottom - top < 40:
         return None
     area = image.crop((0, top, image.width, bottom))
-    # Diferença para o bege; o JPEG deixa ruído, por isso o limiar.
     diff = ImageChops.difference(area, Image.new("RGB", area.size, _BEIGE[:3])).convert("L")
     mask = diff.point(lambda value: 255 if value > 24 else 0)
     columns = mask.resize((mask.width, 1), Image.Resampling.BOX)

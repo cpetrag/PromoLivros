@@ -59,7 +59,9 @@ def trocar_livro(board, cards_dir: Path, day: str, post_id: int, com_id: int, la
     try:
         for post, books in ((first, new_first), (second, new_second)):
             target = cards_dir / f"{post.id}.jpg.novo"
-            render_card([cover for item in books for cover in item.covers], target)
+            covers = [cover for item in books for cover in item.covers]
+            stores = [store_of(item.book) for item in books for _ in item.covers]
+            render_card(covers, target, stores=stores)
             temp_cards[post.id] = target
         error = board.replace_post_books(
             day,
