@@ -15,6 +15,7 @@ from promo_livros.catalog import (
     cached_ml_cover,
     capture_clock,
     fill_blurbs,
+    ml_full_picture,
     parse_csv,
     publish_selection,
 )
@@ -270,6 +271,33 @@ class MercadoLivreCoverTests(unittest.TestCase):
                 with self.assertRaises(CatalogError):
                     cached_ml_cover(root, "MLB4493446393")
             self.assertEqual(list(root.glob("*.jpg")), [])
+
+    def test_ml_thumbnail_becomes_the_full_size_picture(self) -> None:
+        full = "https://http2.mlstatic.com/D_NQ_NP_721292-MLA112165372866_062026-O.webp"
+        for small in (
+            "https://http2.mlstatic.com/D_Q_NP_721292-MLA112165372866_062026-R.webp",
+            "https://http2.mlstatic.com/D_721292-MLA112165372866_062026-I.webp",
+            full,
+        ):
+            self.assertEqual(ml_full_picture(small), full)
+        big = "https://http2.mlstatic.com/D_NQ_NP_2X_721292-MLA112165372866_062026-F.webp"
+        self.assertEqual(ml_full_picture(big), big)
+        self.assertEqual(ml_full_picture("https://http2.mlstatic.com/D_exemplo.jpg"), "https://http2.mlstatic.com/D_exemplo.jpg")
+
+    def test_ml_cover_falls_back_to_the_original_url_when_full_size_fails(self) -> None:
+        from promo_livros.catalog import _download_ml_picture
+
+        small = "https://http2.mlstatic.com/D_Q_NP_721292-MLA112165372866_062026-R.webp"
+        asked = []
+
+        def download(url):
+            asked.append(url)
+            if "-O." in url:
+                raise OSError("404")
+            return Image.new("RGB", (70, 70))
+
+        self.assertEqual(_download_ml_picture(small, download).size, (70, 70))
+        self.assertEqual(asked[-1], small)
 
     def test_the_csv_picture_is_the_cover_and_a_foreign_url_is_dropped(self) -> None:
         header = (

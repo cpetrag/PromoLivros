@@ -72,11 +72,7 @@ def render_card(
     if not covers or len(covers) > 3:
         raise ValueError("O card leva de 1 a 3 capas.")
     side = 280 if len(covers) < 3 else 240
-    fitted = []
-    for cover in covers:
-        image = cover.convert("RGB")
-        image.thumbnail((side, side), Image.Resampling.LANCZOS)
-        fitted.append(image)
+    fitted = [_fit(cover.convert("RGB"), side) for cover in covers]
     use_stores = stores is not None and len(stores) == len(fitted)
     marks = _store_marks(fitted, stores) if use_stores else []
     gap, margin, band = 24, 28, 78
@@ -113,6 +109,15 @@ def render_card(
     canvas.convert("RGB").save(destination, "JPEG", quality=68, optimize=True)
 
 
+def _fit(image: Image.Image, side: int) -> Image.Image:
+    # Amplia também: há lojas que só devolvem miniatura, e ela sumiria ao lado de uma capa cheia.
+    scale = side / max(image.width, image.height)
+    if scale == 1:
+        return image
+    size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
+    return image.resize(size, Image.Resampling.LANCZOS)
+
+
 def extract_covers(card: Path, count: int) -> list[Image.Image] | None:
     """Recorta as capas de um card já feito por `render_card`.
 
@@ -126,13 +131,11 @@ def extract_covers(card: Path, count: int) -> list[Image.Image] | None:
     margin, band, gap = 28, 78, 24
     with Image.open(card) as source:
         image = source.convert("RGB")
-    for strip in (_STORE_STRIP, 0):
-        top = margin
-        if strip:
-            bottom = image.height - band - strip
-        else:
-            bottom = image.height - band - margin
-        found = _covers_in_band(image, top, bottom, gap, count)
+    # As capas cabem num quadrado de `side`; abaixo dele começam as logos das lojas (cards novos) ou a margem (antigos).
+    side = 280 if count < 3 else 240
+    old_bottom = image.height - band - margin
+    for bottom in (min(margin + side, image.height - band), old_bottom, image.height - band - _STORE_STRIP):
+        found = _covers_in_band(image, margin, bottom, gap, count)
         if found is not None:
             return found
     return None

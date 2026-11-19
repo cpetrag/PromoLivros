@@ -4,6 +4,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import logging
 import re
 import sqlite3
 import threading
@@ -25,6 +26,8 @@ from promo_livros.price_log import KEEP_DAYS, PriceLow, PricePoint, lowest_since
 from promo_livros.price_log import STORES as PRICE_STORES
 from promo_livros.magalu_links import is_magalu_url, magalu_product_id
 from promo_livros.shopee_links import SHOPEE_ID, is_shopee_url
+
+logger = logging.getLogger(__name__)
 
 _STORE_ORDER = {"amazon": 0, "ml": 1, "shopee": 2, "magalu": 3}
 
@@ -1046,6 +1049,29 @@ def ml_picture(value: str | None) -> str:
     return url if _ML_PICTURE.fullmatch(url) else ""
 
 
+# D_Q_NP_…-R e D_…-I são miniaturas de 70 px; D_NQ_NP_…-O é a foto original do anúncio.
+_ML_PICTURE_PARTS = re.compile(
+    r"https://http2\.mlstatic\.com/D_(?:N?Q_NP_)?(?P<two_x>2X_)?(?P<picture>\d+-ML[A-Z]\d+_\d+)-[A-Z]\.(?P<ext>jpg|jpeg|webp|png)"
+)
+
+
+def ml_full_picture(url: str) -> str:
+    match = _ML_PICTURE_PARTS.fullmatch(url or "")
+    if match is None or match.group("two_x"):
+        return url
+    return f"https://http2.mlstatic.com/D_NQ_NP_{match.group('picture')}-O.{match.group('ext')}"
+
+
+def _download_ml_picture(url: str, download) -> Image.Image:
+    full = ml_full_picture(url)
+    if full != url:
+        try:
+            return download(full)
+        except Exception as error:
+            logger.info("Foto grande do Mercado Livre indisponível, uso a miniatura: %s", error)
+    return download(url)
+
+
 _SHOPEE_PICTURE = re.compile(r"https://down-br\.img\.susercontent\.com/file/[A-Za-z0-9_\-]+")
 _SHOPEE_LINK = (
     re.compile(r"https://shopee\.com\.br/product/(\d+)/(\d+)/?(?:\?.*)?", re.IGNORECASE),
@@ -1259,7 +1285,7 @@ def cached_ml_cover(
     if not thumb:
         raise CatalogError("Sem capa.")
     try:
-        image = download(thumb)
+        image = _download_ml_picture(thumb, download)
     except Exception as exc:
         raise CatalogError("Sem capa.") from exc
     out = BytesIO()
@@ -1546,9 +1572,11 @@ def _one_cover(book: CatalogBook, download, thumbnail) -> Image.Image:
         thumb = (book.image_url or "").strip()
     if thumb:
         try:
+            if book.store == "ml":
+                return _download_ml_picture(thumb, download)
             return download(thumb)
-        except Exception:
-            pass
+        except Exception as error:
+            logger.warning("Capa de %s indisponível (%s): %s", book.asin, book.store, error)
     return Image.new("RGB", (280, 400), (245, 241, 232))
 
 

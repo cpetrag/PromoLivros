@@ -74,6 +74,17 @@ class RenderCardStoreLogosTests(unittest.TestCase):
             self.assertGreater(right_box[1], left_box[1])
 
 
+class RenderCardSmallCoverTests(unittest.TestCase):
+    def test_small_cover_is_enlarged_to_match_the_others(self):
+        """Miniatura de 70 px não pode virar um selo ao lado de uma capa de 280 px."""
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = Path(tmp) / "card.jpg"
+            render_card([_cover(RED, (600, 900)), _cover(BLUE, (70, 70))], destination)
+            covers = extract_covers(destination, 2)
+            self.assertIsNotNone(covers)
+            self.assertGreaterEqual(covers[1].height, 270)
+
+
 class ExtractCoversWithStoresTests(unittest.TestCase):
     def test_extract_covers_ignores_store_logos(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -86,6 +97,7 @@ class ExtractCoversWithStoresTests(unittest.TestCase):
             covers = extract_covers(card, 2)
             self.assertIsNotNone(covers)
             self.assertEqual(len(covers), 2)
+            self.assertEqual([cover.height for cover in covers], [280, 280])
 
     def test_extract_covers_still_works_on_old_cards(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -94,6 +106,7 @@ class ExtractCoversWithStoresTests(unittest.TestCase):
             covers = extract_covers(card, 2)
             self.assertIsNotNone(covers)
             self.assertEqual(len(covers), 2)
+            self.assertEqual([cover.height for cover in covers], [280, 280])
 
 
 if __name__ == "__main__":
