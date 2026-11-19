@@ -1,10 +1,14 @@
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from random import Random
 
 from PIL import Image
 
 from promo_livros.board_store import BoardBook, BoardStore
+from promo_livros.campaign_queue import CampaignQueueContext
+from promo_livros.campaign_store import CampaignStore
 from promo_livros.catalog import CatalogError, CatalogStore, parse_csv, publish_selection
 from promo_livros.fila_aplicar import MemoriaPrevia, aplicar, desfazer, previa, reorganizar
 
@@ -191,3 +195,241 @@ class PreviaAplicarTests(unittest.TestCase):
             finally:
                 catalog.close()
                 board.close()
+
+
+class ReorganizarComCampanhaTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self._folder.cleanup)
+        self.root = Path(self._folder.name)
+        path = self.root / "board.sqlite"
+        self.catalog = CatalogStore(path)
+        self.board = BoardStore(path)
+        self.addCleanup(self.catalog.close)
+        self.addCleanup(self.board.close)
+
+    def _campaign_post(self, clock: str) -> int:
+        return self.board.add_campaign_post(
+            "2026-10-02",
+            clock,
+            campaign_id=3,
+            image_id=4,
+            text_id=5,
+            caption="Convite",
+            image_path="data/campaigns/3/a.jpg",
+            locked_at="2026-10-02T08:00:00-03:00",
+        )
+
+    def _reorganize(self) -> str:
+        return reorganizar(self.catalog, self.board, "2026-10-02", "15:12", self.root / "cards", download=_download)
+
+    def _publish_books(self) -> None:
+        self.catalog.replace(parse_csv(_CSV), "amazon")
+        self.catalog.set_picked("B000000002", True, "2026-10-02")
+        publish_selection(self.catalog, self.board, "2026-10-02", "07:00", self.root / "cards", download=_download)
+
+    def test_reorganizar_keeps_campaign_posts_with_same_content_and_free_their_clock(self) -> None:
+        self._publish_books()
+        from promo_livros.fila import horarios_livres
+
+        schedule = self.board.send_schedule()
+        reserved = horarios_livres(schedule.start, schedule.end, schedule.post_interval_minutes, "15:12")[0]
+        self._campaign_post(reserved)
+
+        self._reorganize()
+
+        posts = self.board.posts_for("2026-10-02")
+        campaigns = [post for post in posts if post.post_kind == "campaign"]
+        self.assertEqual(len(campaigns), 1)
+        self.assertEqual(
+            (campaigns[0].clock, campaigns[0].campaign_id, campaigns[0].image_id, campaigns[0].text_id),
+            (reserved, 3, 4, 5),
+        )
+        self.assertEqual(campaigns[0].caption, "Convite")
+        self.assertEqual(campaigns[0].image_path, "data/campaigns/3/a.jpg")
+        book_clocks = [post.clock for post in posts if post.post_kind != "campaign"]
+        self.assertNotIn(reserved, book_clocks)
+        self.assertTrue(book_clocks)
+
+    def test_only_campaign_posts_left_is_not_reported_as_window_closed(self) -> None:
+        post_id = self._campaign_post("16:00")
+
+        notice = self._reorganize()
+
+        self.assertNotIn("janela", notice.lower())
+        self.assertIn("campanha", notice.lower())
+        self.assertEqual([post.id for post in self.board.posts_for("2026-10-02")], [post_id])
+
+    def test_undo_after_reorganizar_brings_campaign_posts_back(self) -> None:
+        self._publish_books()
+        self._campaign_post("16:00")
+        self._reorganize()
+
+        desfazer(self.catalog, self.board, "2026-10-02")
+
+        kinds = sorted(post.post_kind for post in self.board.posts_for("2026-10-02"))
+        self.assertEqual(kinds.count("campaign"), 1)
+
+
+_DAY = "2026-10-02"
+_NOW = datetime(2026, 10, 2, 9, 0, tzinfo=timezone(timedelta(hours=-3)))
+_STAMP = "2026-10-02T09:00:00-03:00"
+
+
+def _campaign_slot(clock: str) -> dict:
+    return {"clock": clock, "amazon": "", "ml": "", "shopee": "", "magalu": "", "extra": "", "is_campaign": True}
+
+
+class MontagemCampanhaTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self._folder.cleanup)
+        self.root = Path(self._folder.name)
+        path = self.root / "board.sqlite"
+        self.catalog = CatalogStore(path)
+        self.board = BoardStore(path)
+        self.campaigns = CampaignStore(path)
+        self.addCleanup(self.catalog.close)
+        self.addCleanup(self.board.close)
+        self.addCleanup(self.campaigns.close)
+        self.context = CampaignQueueContext(self.campaigns, Random(7), lambda: _NOW)
+
+    def _ready_campaign(self, name: str, images: int = 1, texts: int = 1) -> int:
+        campaign_id = self.campaigns.create(name)
+        for number in range(images):
+            self.campaigns.add_image(campaign_id, f"data/campaigns/{campaign_id}/{number}.jpg")
+        for number in range(texts):
+            self.campaigns.add_text(campaign_id, f"{name} texto {number}")
+        return campaign_id
+
+    def _mount(self, slots: list[dict]) -> str:
+        return publish_selection(
+            self.catalog,
+            self.board,
+            _DAY,
+            "00:00",
+            self.root / "cards",
+            download=_download,
+            slots_fixos=slots,
+            campaign_context=self.context,
+        )
+
+    def _campaign_ids(self) -> list[int | None]:
+        return [post.campaign_id for post in self.board.posts_for(_DAY)]
+
+    def test_mount_assigns_rotating_campaigns_in_order(self) -> None:
+        first = self._ready_campaign("Primeira")
+        second = self._ready_campaign("Segunda")
+        self._mount([_campaign_slot("11:00"), _campaign_slot("10:00")])
+        posts = self.board.posts_for(_DAY)
+        self.assertEqual([post.clock for post in posts], ["10:00", "11:00"])
+        self.assertEqual([post.campaign_id for post in posts], [first, second])
+        for post in posts:
+            self.assertEqual(post.post_kind, "campaign")
+            self.assertEqual(post.books, ())
+            self.assertEqual(post.campaign_locked_at, _STAMP)
+            self.assertTrue(post.image_path.startswith(f"data/campaigns/{post.campaign_id}/"))
+            self.assertIn("texto", post.caption)
+            self.assertIsNotNone(post.image_id)
+            self.assertIsNotNone(post.text_id)
+
+    def test_mount_continues_rotation_after_last_used_campaign(self) -> None:
+        first = self._ready_campaign("Primeira")
+        second = self._ready_campaign("Segunda")
+        third = self._ready_campaign("Terceira")
+        sent_id = self.board.add_campaign_post(
+            _DAY, "08:00", campaign_id=first, image_id=1, text_id=1, locked_at="2026-10-02T07:00:00-03:00"
+        )
+        self.board.mark_sent(sent_id)
+        self._mount([_campaign_slot("10:00"), _campaign_slot("11:00"), _campaign_slot("12:00")])
+        pending = [post for post in self.board.posts_for(_DAY) if post.clock >= "10:00"]
+        self.assertEqual([post.campaign_id for post in pending], [second, third, first])
+
+    def test_mount_again_does_not_advance_rotation_with_replaced_posts(self) -> None:
+        first = self._ready_campaign("Primeira")
+        second = self._ready_campaign("Segunda")
+        self._ready_campaign("Terceira")
+        slots = [_campaign_slot("10:00"), _campaign_slot("11:00")]
+        self._mount(slots)
+        self._mount(slots)
+        self.assertEqual(self._campaign_ids(), [first, second])
+
+    def test_mount_avoids_repeating_photo_and_text_for_the_same_campaign(self) -> None:
+        only = self._ready_campaign("Unica", images=2, texts=2)
+        self._mount([_campaign_slot("10:00"), _campaign_slot("11:00")])
+        first, second = self.board.posts_for(_DAY)
+        self.assertEqual((first.campaign_id, second.campaign_id), (only, only))
+        self.assertNotEqual(first.image_id, second.image_id)
+        self.assertNotEqual(first.text_id, second.text_id)
+
+    def test_empty_rotating_pool_creates_empty_campaign_post_with_warning(self) -> None:
+        notice = self._mount([_campaign_slot("10:00")])
+        (post,) = self.board.posts_for(_DAY)
+        self.assertEqual(post.post_kind, "campaign")
+        self.assertIsNone(post.campaign_id)
+        self.assertEqual((post.caption, post.image_path), ("", ""))
+        self.assertIn("10:00: sem campanha rotativa pronta", notice)
+
+    def test_fixed_clock_campaigns_are_not_used_by_the_rotation(self) -> None:
+        fixed = self._ready_campaign("Fixa")
+        self.campaigns.set_schedule(fixed, "13:00", None)
+        self._mount([_campaign_slot("10:00")])
+        self.assertEqual(self._campaign_ids(), [None])
+
+    def test_book_and_campaign_slots_share_one_queue(self) -> None:
+        self.catalog.replace(parse_csv(_CSV), "amazon")
+        self.catalog.set_picked("B000000002", True, _DAY)
+        campaign = self._ready_campaign("Primeira")
+        notice = self._mount(
+            [
+                {"clock": "10:00", "amazon": "B000000002", "ml": "", "shopee": "", "magalu": "", "extra": ""},
+                _campaign_slot("11:00"),
+            ]
+        )
+        book_post, campaign_post = self.board.posts_for(_DAY)
+        self.assertEqual(book_post.books[0].title, "Cute Bears")
+        self.assertEqual(book_post.post_kind, "book")
+        self.assertEqual(campaign_post.campaign_id, campaign)
+        self.assertIn("1 livros e 1 campanhas entraram", notice)
+
+    def test_campaign_slot_without_campaign_context_is_refused(self) -> None:
+        with self.assertRaises(CatalogError):
+            publish_selection(
+                self.catalog,
+                self.board,
+                _DAY,
+                "00:00",
+                self.root / "cards",
+                download=_download,
+                slots_fixos=[_campaign_slot("10:00")],
+            )
+        self.assertEqual(self.board.posts_for(_DAY), [])
+
+    def test_aplicar_and_desfazer_restore_campaign_posts(self) -> None:
+        self.catalog.replace(parse_csv(_CSV), "amazon")
+        self.catalog.set_picked("B000000002", True, _DAY)
+        campaign = self._ready_campaign("Primeira")
+        self._mount([_campaign_slot("10:00")])
+        before = [(post.clock, post.campaign_id, post.caption) for post in self.board.posts_for(_DAY)]
+        memoria = MemoriaPrevia()
+        payload = previa(self.catalog, self.board, _DAY, "00:00", "mine", memoria)
+        aplicar(
+            self.catalog,
+            self.board,
+            _DAY,
+            payload["previa_id"],
+            memoria,
+            self.root / "cards",
+            download=_download,
+            campaign_context=self.context,
+        )
+        self.assertEqual(desfazer(self.catalog, self.board, _DAY), "A fila anterior voltou.")
+        restored = self.board.posts_for(_DAY)
+        self.assertEqual([(post.clock, post.campaign_id, post.caption) for post in restored], before)
+        self.assertEqual(restored[0].campaign_id, campaign)
+        self.assertEqual(restored[0].post_kind, "campaign")
+        self.assertIsNotNone(restored[0].campaign_locked_at)
+
+
+if __name__ == "__main__":
+    unittest.main()

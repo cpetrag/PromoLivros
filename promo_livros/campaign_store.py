@@ -6,7 +6,14 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from promo_livros.campaign_rules import INVITE_KINDS, RotationEntry
+from promo_livros.campaign_rules import (
+    INVITE_KINDS,
+    RotationEntry,
+    campaign_valid_on,
+    is_rotating,
+    parse_campaign_clock,
+    parse_valid_until,
+)
 
 MAX_NAME_LENGTH = 80
 MAX_TEXT_LENGTH = 1024
@@ -18,7 +25,9 @@ CREATE TABLE IF NOT EXISTS campaigns (
     name TEXT NOT NULL,
     active INTEGER NOT NULL DEFAULT 1,
     position INTEGER NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    fixed_clock TEXT,
+    valid_until TEXT
 );
 CREATE TABLE IF NOT EXISTS campaign_images (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -35,7 +44,7 @@ CREATE TABLE IF NOT EXISTS campaign_texts (
 CREATE TABLE IF NOT EXISTS campaign_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     day TEXT NOT NULL,
-    kind TEXT NOT NULL CHECK (kind IN ('fixed', 'last')),
+    kind TEXT NOT NULL CHECK (kind IN ('fixed', 'last', 'clock')),
     campaign_id INTEGER,
     manual INTEGER NOT NULL DEFAULT 0,
     image_id INTEGER,
@@ -43,7 +52,7 @@ CREATE TABLE IF NOT EXISTS campaign_runs (
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sending', 'sent', 'skipped')),
     locked_at TEXT,
     sent_at TEXT,
-    UNIQUE (day, kind)
+    clock TEXT
 );
 CREATE TABLE IF NOT EXISTS campaign_run_groups (
     run_id INTEGER NOT NULL REFERENCES campaign_runs(id) ON DELETE CASCADE,
@@ -54,16 +63,107 @@ CREATE TABLE IF NOT EXISTS campaign_run_groups (
 );
 """
 
+# Bancos criados antes dos convites por horário têm CHECK (kind) sem 'clock' e UNIQUE (day, kind).
+# O SQLite não altera CHECK/UNIQUE no lugar, então a tabela é refeita preservando ids e grupos.
+#
+# Cada instrução roda separada dentro de um único BEGIN IMMEDIATE/COMMIT: queda no meio desfaz tudo
+# e a tabela de histórico nunca fica trocada por uma vazia.
+_REBUILD_RUNS_STATEMENTS = (
+    "DROP TABLE IF EXISTS campaign_runs_new",
+    """
+CREATE TABLE campaign_runs_new (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    day TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('fixed', 'last', 'clock')),
+    campaign_id INTEGER,
+    manual INTEGER NOT NULL DEFAULT 0,
+    image_id INTEGER,
+    text_id INTEGER,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sending', 'sent', 'skipped')),
+    locked_at TEXT,
+    sent_at TEXT,
+    clock TEXT
+)
+""",
+    """
+INSERT INTO campaign_runs_new (id, day, kind, campaign_id, manual, image_id, text_id, status, locked_at, sent_at)
+    SELECT id, day, kind, campaign_id, manual, image_id, text_id, status, locked_at, sent_at FROM campaign_runs
+""",
+    "DROP TABLE campaign_runs",
+    "ALTER TABLE campaign_runs_new RENAME TO campaign_runs",
+)
+
+# 'fixed' fica único por dia só para o legado; o envio novo usa 'clock' (uma por campanha) e 'last'.
+_RUN_INDEXES = """
+CREATE UNIQUE INDEX IF NOT EXISTS campaign_runs_fixed_day ON campaign_runs(day) WHERE kind = 'fixed';
+CREATE UNIQUE INDEX IF NOT EXISTS campaign_runs_last_day ON campaign_runs(day) WHERE kind = 'last';
+CREATE UNIQUE INDEX IF NOT EXISTS campaign_runs_clock_day_campaign
+    ON campaign_runs(day, campaign_id) WHERE kind = 'clock';
+"""
+
 _CAMPAIGN_SELECT = """
-SELECT c.id, c.name, c.active, c.position,
+SELECT c.id, c.name, c.active, c.position, c.fixed_clock, c.valid_until,
     (SELECT COUNT(*) FROM campaign_images i WHERE i.campaign_id = c.id) AS image_count,
     (SELECT COUNT(*) FROM campaign_texts t WHERE t.campaign_id = c.id) AS text_count
 FROM campaigns c
 """
 
 _RUN_SELECT = """
-SELECT id, day, kind, campaign_id, manual, image_id, text_id, status, sent_at
+SELECT id, day, kind, campaign_id, manual, image_id, text_id, status, sent_at, clock
 FROM campaign_runs
+"""
+
+
+_ROTATING_RUN_LOCKS = """
+SELECT r.campaign_id AS campaign_id, c.position AS position, r.locked_at AS locked_at, r.id AS row_id
+FROM campaign_runs r
+JOIN campaigns c ON c.id = r.campaign_id
+WHERE r.kind = 'last' AND r.locked_at IS NOT NULL AND c.fixed_clock IS NULL
+"""
+
+_ROTATING_BOARD_LOCKS = """
+SELECT p.campaign_id AS campaign_id, c.position AS position, p.campaign_locked_at AS locked_at, p.id AS row_id
+FROM scheduled_posts p
+JOIN campaigns c ON c.id = p.campaign_id
+WHERE p.post_kind = 'campaign'
+  AND p.campaign_id IS NOT NULL
+  AND p.campaign_locked_at IS NOT NULL
+  AND p.status NOT IN ('replaced', 'cancelled')
+  AND c.fixed_clock IS NULL
+"""
+
+# Fila refeita ou limpa não envia o post; contá-lo faria o rodízio andar sem convite algum.
+_LAST_CONTENT_RUNS = """
+SELECT image_id, text_id, locked_at, id AS row_id FROM campaign_runs
+WHERE campaign_id = ? AND locked_at IS NOT NULL
+"""
+
+_LAST_CONTENT_BOARD = """
+SELECT image_id, text_id, campaign_locked_at AS locked_at, id AS row_id FROM scheduled_posts
+WHERE campaign_id = ? AND post_kind = 'campaign' AND campaign_locked_at IS NOT NULL
+  AND status NOT IN ('replaced', 'cancelled')
+"""
+
+_LAST_CONTENT_UNION = f"""
+SELECT image_id, text_id FROM (
+{_LAST_CONTENT_RUNS}
+UNION ALL
+{_LAST_CONTENT_BOARD}
+)
+ORDER BY locked_at DESC, row_id DESC
+LIMIT 1
+"""
+
+_LAST_ROTATING_RUNS = f"SELECT campaign_id, position FROM ({_ROTATING_RUN_LOCKS}) ORDER BY locked_at DESC, row_id DESC LIMIT 1"
+
+_LAST_ROTATING_UNION = f"""
+SELECT campaign_id, position FROM (
+{_ROTATING_RUN_LOCKS}
+UNION ALL
+{_ROTATING_BOARD_LOCKS}
+)
+ORDER BY locked_at DESC, row_id DESC
+LIMIT 1
 """
 
 
@@ -79,10 +179,15 @@ class Campaign:
     position: int
     image_count: int
     text_count: int
+    fixed_clock: str | None = None
+    valid_until: str | None = None
 
     @property
     def ready(self) -> bool:
         return self.active and self.image_count > 0 and self.text_count > 0
+
+    def ready_on(self, day: str) -> bool:
+        return self.ready and campaign_valid_on(self.valid_until, day)
 
 
 @dataclass(frozen=True)
@@ -110,6 +215,7 @@ class CampaignRun:
     text_id: int | None
     status: str
     sent_at: str | None
+    clock: str | None = None
 
 
 class CampaignStore:
@@ -122,8 +228,53 @@ class CampaignStore:
         self._connection.execute("PRAGMA journal_mode=WAL")
         self._connection.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
         self._connection.execute("PRAGMA foreign_keys = ON")
-        self._connection.executescript(_SCHEMA)
+        try:
+            self._connection.executescript(_SCHEMA)
+            self._migrate()
+            self._connection.commit()
+        except BaseException:
+            # Migração que falha não pode deixar o arquivo preso pela conexão aberta.
+            self._connection.close()
+            raise
+
+    def _migrate(self) -> None:
+        """Leva bancos antigos ao esquema atual. Idempotente: roda a cada abertura."""
+        self._add_column_if_missing("campaigns", "fixed_clock")
+        self._add_column_if_missing("campaigns", "valid_until")
+        self._add_column_if_missing("campaign_runs", "clock")
+        if self._runs_table_needs_rebuild():
+            self._rebuild_runs_table()
+        self._connection.executescript(_RUN_INDEXES)
+
+    def _runs_table_needs_rebuild(self) -> bool:
+        row = self._connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'campaign_runs'"
+        ).fetchone()
+        return row is not None and "'clock'" not in row["sql"]
+
+    def _rebuild_runs_table(self) -> None:
+        # Com foreign_keys ligado, o DROP apagaria campaign_run_groups em cascata.
+        # O PRAGMA não vale dentro de transação, por isso fica fora do BEGIN.
         self._connection.commit()
+        self._connection.execute("PRAGMA foreign_keys = OFF")
+        try:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                # Outra abertura pode ter migrado enquanto esperávamos o lock.
+                if self._runs_table_needs_rebuild():
+                    for statement in _REBUILD_RUNS_STATEMENTS:
+                        self._connection.execute(statement)
+                self._connection.commit()
+            except BaseException:
+                self._connection.rollback()
+                raise
+        finally:
+            self._connection.execute("PRAGMA foreign_keys = ON")
+
+    def _add_column_if_missing(self, table: str, column: str) -> None:
+        columns = {row["name"] for row in self._connection.execute(f"PRAGMA table_info({table})")}
+        if column not in columns:
+            self._connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
 
     def close(self) -> None:
         self._connection.close()
@@ -179,6 +330,25 @@ class CampaignStore:
 
     def ready_campaigns(self) -> list[Campaign]:
         return [item for item in self.campaigns() if item.ready]
+
+    def set_schedule(self, campaign_id: int, fixed_clock: str | None, valid_until: str | None) -> None:
+        """Horário fixo (None = rotativa) e última data de validade (None = sem prazo)."""
+        try:
+            clock = parse_campaign_clock(fixed_clock or "")
+            until = parse_valid_until(valid_until or "")
+        except ValueError as exc:
+            raise CampaignError(str(exc)) from exc
+        with self._lock, self._connection:
+            self._connection.execute(
+                "UPDATE campaigns SET fixed_clock = ?, valid_until = ? WHERE id = ?",
+                (clock, until, campaign_id),
+            )
+
+    def ready_rotating(self, day: str) -> list[Campaign]:
+        return [item for item in self.campaigns() if item.ready_on(day) and is_rotating(item.fixed_clock)]
+
+    def ready_fixed(self, day: str) -> list[Campaign]:
+        return [item for item in self.campaigns() if item.ready_on(day) and not is_rotating(item.fixed_clock)]
 
     # Fotos
 
@@ -267,12 +437,37 @@ class CampaignStore:
             row = self._connection.execute(_RUN_SELECT + " WHERE day = ? AND kind = ?", (day, kind)).fetchone()
         return _run(row)
 
+    def run_for_clock(self, day: str, campaign_id: int, clock: str) -> CampaignRun:
+        """Convite de uma campanha fixa no dia. Um por campanha, então duas no mesmo horário não colidem."""
+        with self._lock, self._connection:
+            self._connection.execute(
+                """
+                INSERT OR IGNORE INTO campaign_runs (day, kind, campaign_id, clock)
+                VALUES (?, 'clock', ?, ?)
+                """,
+                (day, campaign_id, clock),
+            )
+            row = self._connection.execute(
+                _RUN_SELECT + " WHERE day = ? AND kind = 'clock' AND campaign_id = ?",
+                (day, campaign_id),
+            ).fetchone()
+        return _run(row)
+
     def peek_run(self, day: str, kind: str) -> CampaignRun | None:
         """Como run_for, mas só lê. None quer dizer que o convite ainda não começou (pendente)."""
         if kind not in INVITE_KINDS:
             raise CampaignError("Tipo de convite desconhecido.")
         with self._lock:
             row = self._connection.execute(_RUN_SELECT + " WHERE day = ? AND kind = ?", (day, kind)).fetchone()
+        return _run(row) if row else None
+
+    def peek_clock_run(self, day: str, campaign_id: int) -> CampaignRun | None:
+        """Como run_for_clock, mas só lê: o painel não pode criar convites ao desenhar a tela."""
+        with self._lock:
+            row = self._connection.execute(
+                _RUN_SELECT + " WHERE day = ? AND kind = 'clock' AND campaign_id = ?",
+                (day, campaign_id),
+            ).fetchone()
         return _run(row) if row else None
 
     def run(self, run_id: int) -> CampaignRun | None:
@@ -402,17 +597,35 @@ class CampaignStore:
             return None
         return RotationEntry(int(row["campaign_id"]), int(row["position"]))
 
-    def last_content(self, campaign_id: int) -> tuple[int | None, int | None]:
+    def last_used_rotating(self) -> RotationEntry | None:
+        """Última campanha rotativa usada, no convite final ou num post de campanha da fila.
+
+        As duas origens dividem um só cursor, então o rodízio segue em ordem entre elas.
+        """
+        query = _LAST_ROTATING_RUNS
+        if self._board_campaign_columns_exist():
+            query = _LAST_ROTATING_UNION
         with self._lock:
-            row = self._connection.execute(
-                """
-                SELECT image_id, text_id FROM campaign_runs
-                WHERE campaign_id = ? AND locked_at IS NOT NULL
-                ORDER BY locked_at DESC, id DESC
-                LIMIT 1
-                """,
-                (campaign_id,),
-            ).fetchone()
+            row = self._connection.execute(query).fetchone()
+        if row is None:
+            return None
+        return RotationEntry(int(row["campaign_id"]), int(row["position"]))
+
+    def _board_campaign_columns_exist(self) -> bool:
+        """O board compartilha este arquivo, mas pode não ter criado a tabela ou migrado as colunas ainda."""
+        with self._lock:
+            columns = {row["name"] for row in self._connection.execute("PRAGMA table_info(scheduled_posts)")}
+        return {"post_kind", "campaign_id", "campaign_locked_at"} <= columns
+
+    def last_content(self, campaign_id: int) -> tuple[int | None, int | None]:
+        """Última foto e texto da campanha, no convite final ou num post dela na fila."""
+        query = f"{_LAST_CONTENT_RUNS} ORDER BY locked_at DESC, row_id DESC LIMIT 1"
+        parameters: tuple[int, ...] = (campaign_id,)
+        if self._board_campaign_columns_exist():
+            query = _LAST_CONTENT_UNION
+            parameters = (campaign_id, campaign_id)
+        with self._lock:
+            row = self._connection.execute(query, parameters).fetchone()
         if row is None:
             return None, None
         return row["image_id"], row["text_id"]
@@ -431,6 +644,8 @@ def _campaign(row: sqlite3.Row) -> Campaign:
         position=int(row["position"]),
         image_count=int(row["image_count"]),
         text_count=int(row["text_count"]),
+        fixed_clock=row["fixed_clock"],
+        valid_until=row["valid_until"],
     )
 
 
@@ -445,6 +660,7 @@ def _run(row: sqlite3.Row) -> CampaignRun:
         text_id=row["text_id"],
         status=str(row["status"]),
         sent_at=row["sent_at"],
+        clock=row["clock"],
     )
 
 

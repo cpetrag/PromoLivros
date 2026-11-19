@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 from PIL import Image
 
 from promo_livros.board_store import BoardBook, BoardStore
+from promo_livros.campaign_queue import CampaignQueueContext, plan_campaign_posts
 from promo_livros.fila import OpcoesFila, item_de_livro, montar_fila
 from promo_livros.ml_links import clean_product_url, is_ml_url, thumbnail_url
 from promo_livros.post_card import download_image, render_card
@@ -1332,6 +1333,7 @@ def publish_selection(
     bloqueados_fixos: list[tuple[str, str]] | None = None,
     livros_extra: list | None = None,
     replace_after: str | None = None,
+    campaign_context: CampaignQueueContext | None = None,
 ) -> str:
     from datetime import date, timedelta
 
@@ -1353,6 +1355,7 @@ def publish_selection(
             describe,
             livros_extra,
             replace_after,
+            campaign_context,
         )
     amazon_books, ml_books = catalog.queue_for(day)
     fila = montar_fila(
@@ -1433,14 +1436,21 @@ def _publish_fixed(
     describe,
     livros_extra=None,
     replace_after=None,
+    campaign_context=None,
 ) -> str:
     from datetime import date, timedelta
 
     by_id = {book.asin: book for book in (*catalog.books(), *catalog.ml_books(), *(livros_extra or []))}
     pairs = []
     clocks = []
+    campaign_clocks: list[str] = []
     na_fila: list[tuple[str, str]] = []
     for slot in slots_fixos:
+        if slot.get("is_campaign"):
+            if campaign_context is None:
+                raise CatalogError("Esta fila tem slot de campanha, mas as campanhas não estão disponíveis aqui.")
+            campaign_clocks.append(slot["clock"])
+            continue
         amazon = by_id.get(slot.get("amazon") or "")
         mercado = by_id.get(slot.get("ml") or "")
         shopee = by_id.get(slot.get("shopee") or "")
@@ -1457,7 +1467,7 @@ def _publish_fixed(
             na_fila.append(
                 (item.store if item.store in {"amazon", "ml", "shopee", "magalu"} else "amazon", item.asin)
             )
-    if not pairs:
+    if not pairs and not campaign_clocks:
         raise CatalogError("Marque pelo menos um livro com preço.")
     notice = _gravar_posts(
         store,
@@ -1472,6 +1482,8 @@ def _publish_fixed(
         thumbnail,
         describe,
         replace_after,
+        campaign_context,
+        campaign_clocks,
     )
     tomorrow = (date.fromisoformat(day) + timedelta(days=1)).isoformat()
     catalog.aplicar_estados(na_fila, sobras_fixas, bloqueados_fixos, day, tomorrow)
@@ -1493,6 +1505,8 @@ def _gravar_posts(
     thumbnail,
     describe,
     replace_after=None,
+    campaign_context=None,
+    campaign_clocks=(),
 ) -> str:
     prepared = [(book, alt, _covers_for(book, alt, download, thumbnail)) for book, alt in chosen]
     primary_urls = _resolve_mixed(
@@ -1538,10 +1552,35 @@ def _gravar_posts(
         for image in covers:
             image.close()
         store.set_image(post_id, f"data/cards/{post_id}.jpg")
+    campaign_warnings = _gravar_campanhas(store, day, campaign_context, list(campaign_clocks))
     affiliate = ""
     if resolve_ml is not None and raw_ml:
         affiliate = " Os links do Mercado Livre continuam sem afiliado. Cole os cookies em Configurações."
-    return f"{len(chosen)} livros entraram na fila de {day}. Nada foi enviado.{affiliate}"
+    entered = f"{len(chosen)} livros"
+    if campaign_clocks:
+        entered = f"{entered} e {len(campaign_clocks)} campanhas"
+    warnings = "".join(f" Aviso: {warning}." for warning in campaign_warnings)
+    return f"{entered} entraram na fila de {day}. Nada foi enviado.{affiliate}{warnings}"
+
+
+def _gravar_campanhas(store, day: str, campaign_context, clocks: list[str]) -> list[str]:
+    """Grava os posts de campanha depois da limpeza do dia, para o rodízio não contar a fila antiga."""
+    if not clocks:
+        return []
+    plans, warnings = plan_campaign_posts(campaign_context, day, clocks)
+    locked_at = campaign_context.now().isoformat(timespec="seconds")
+    for plan in plans:
+        store.add_campaign_post(
+            day,
+            plan.clock,
+            campaign_id=plan.campaign_id,
+            image_id=plan.image_id,
+            text_id=plan.text_id,
+            caption=plan.caption,
+            image_path=plan.image_path,
+            locked_at=locked_at if plan.campaign_id is not None else None,
+        )
+    return warnings
 
 
 def _fetch_cover(asin: str, download) -> Image.Image:

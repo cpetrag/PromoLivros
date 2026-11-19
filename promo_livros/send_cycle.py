@@ -9,7 +9,7 @@ from pathlib import Path
 
 from promo_livros.board_send import publish_due
 from promo_livros.board_store import BoardStore
-from promo_livros.campaign_send import publish_due_invite
+from promo_livros.campaign_send import publish_due_fixed_campaigns, publish_due_invite
 from promo_livros.campaign_store import CampaignStore
 from promo_livros.models import AppConfig
 from promo_livros.polls import PollStore, advance_polls
@@ -26,10 +26,11 @@ class CycleResult:
     invite: str
     queue: str
     poll: str
+    fixed: str = "idle"
 
     @property
     def failed(self) -> bool:
-        return FAILED in {self.invite, self.queue, self.poll}
+        return FAILED in {self.fixed, self.invite, self.queue, self.poll}
 
 
 def run_send_cycle(
@@ -43,6 +44,18 @@ def run_send_cycle(
     now: datetime,
 ) -> CycleResult:
     """Cada passo relê os carimbos depois do anterior, porque o anterior pode ter acabado de mandar."""
+    fixed = _guarded(
+        "O ciclo das campanhas fixas falhou.",
+        lambda: publish_due_fixed_campaigns(
+            config,
+            board,
+            campaigns,
+            client,
+            root=root,
+            now=now,
+            quiet_since=polls.last_outbound_at(),
+        ),
+    )
     invite = _guarded(
         "O ciclo do convite falhou.",
         lambda: publish_due_invite(
@@ -64,6 +77,7 @@ def run_send_cycle(
             root=root,
             now=now,
             quiet_since=latest_stamp((polls.last_outbound_at(), campaigns.last_sent_at()), now),
+            campaigns=campaigns,
         ),
     )
     poll = _guarded(
@@ -76,7 +90,7 @@ def run_send_cycle(
             other_sent_at=latest_stamp((board.last_group_sent_at(), campaigns.last_sent_at()), now),
         ),
     )
-    return CycleResult(invite=invite, queue=queue, poll=poll)
+    return CycleResult(invite=invite, queue=queue, poll=poll, fixed=fixed)
 
 
 def _guarded(message: str, step: Callable[[], str]) -> str:

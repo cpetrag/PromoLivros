@@ -29,7 +29,7 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     logger = logging.getLogger("promo_livros.board_send")
     logger.info("Envio da fila nova no ar.")
-    previous = CycleResult(invite="", queue="", poll="")
+    previous = CycleResult(invite="", queue="", poll="", fixed="")
     last_refresh = 0.0
     while True:
         try:
@@ -41,6 +41,8 @@ def main() -> int:
             continue
         if result.queue != previous.queue:
             logger.info("Situação: %s.", result.queue)
+        if result.fixed != previous.fixed:
+            logger.info("Campanhas fixas: %s.", result.fixed)
         if result.invite != previous.invite:
             logger.info("Convites: %s.", result.invite)
         if result.poll != previous.poll:

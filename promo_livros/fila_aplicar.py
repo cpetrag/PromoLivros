@@ -10,7 +10,7 @@ import time
 from datetime import date, timedelta
 
 from promo_livros.catalog import CatalogBook, CatalogError, _in_second_store, publish_selection
-from promo_livros.fila import OpcoesFila, chave_obra, item_de_livro, montar_fila, produto_de_url
+from promo_livros.fila import CAMPAIGN_LABEL, OpcoesFila, chave_obra, item_de_livro, montar_fila, produto_de_url
 from promo_livros.magalu_links import is_magalu_url
 from promo_livros.shopee_links import is_shopee_product
 
@@ -186,8 +186,20 @@ def desfazer(catalog, board, day: str) -> str:
         raise CatalogError("O prazo de desfazer acabou.")
     board.replace_scheduled(day)
     for post in payload["posts"]:
-        from promo_livros.board_store import BoardBook
+        from promo_livros.board_store import POST_KIND_CAMPAIGN, BoardBook
 
+        if post.get("post_kind") == POST_KIND_CAMPAIGN:
+            board.add_campaign_post(
+                day,
+                post["clock"],
+                campaign_id=post.get("campaign_id"),
+                image_id=post.get("image_id"),
+                text_id=post.get("text_id"),
+                caption=post["caption"],
+                image_path=post["image_path"],
+                locked_at=post.get("campaign_locked_at"),
+            )
+            continue
         board.add_post(
             day=day,
             clock=post["clock"],
@@ -217,14 +229,32 @@ def desfazer(catalog, board, day: str) -> str:
 
 def reorganizar(catalog, board, day: str, agora: str, cards_dir, **kwargs) -> str:
     """Recoloca o que ainda não saiu nos horários que ainda cabem, sem repetir enviado."""
+    from promo_livros.board_store import POST_KIND_CAMPAIGN
+    from promo_livros.fila import horarios_livres
+
     posts = board.posts_for(day)
     if not posts:
         return "Não há posts para reorganizar."
+    # Post de campanha não tem livros: o rearranjo dos livros não pode apagá-lo nem ocupar o horário dele.
+    campaign_posts = [post for post in posts if post.post_kind == POST_KIND_CAMPAIGN]
+    book_posts = [post for post in posts if post.post_kind != POST_KIND_CAMPAIGN]
+    if campaign_posts and not book_posts:
+        return "Só restam posts de campanha na fila. Não há livros para reorganizar."
     enviados, obras = _enviados(catalog, board, day)
-    amazon, mercado, shopee, extras = _livros_dos_posts(catalog, posts, enviados)
+    amazon, mercado, shopee, extras = _livros_dos_posts(catalog, book_posts, enviados)
     magalu = [book for book in mercado if book.store == "magalu"]
     mercado_ml = [book for book in mercado if book.store != "magalu"]
     schedule = board.send_schedule()
+    reserved_clocks = {post.clock for post in campaign_posts}
+    free_clocks = (
+        tuple(
+            clock
+            for clock in horarios_livres(schedule.start, schedule.end, schedule.post_interval_minutes, agora)
+            if clock not in reserved_clocks
+        )
+        if campaign_posts
+        else None
+    )
     fila = montar_fila(
         [item_de_livro(book) for book in amazon],
         [item_de_livro(book) for book in mercado_ml],
@@ -236,6 +266,7 @@ def reorganizar(catalog, board, day: str, agora: str, cards_dir, **kwargs) -> st
             enviados=enviados,
             ordem="mine",
             obras_enviadas=obras,
+            horarios=free_clocks,
         ),
         shopee=[item_de_livro(book) for book in shopee],
         magalu=[item_de_livro(book) for book in magalu],
@@ -254,22 +285,43 @@ def reorganizar(catalog, board, day: str, agora: str, cards_dir, **kwargs) -> st
         }
         for slot in fila.slots
     ]
-    notice = publish_selection(
-        catalog,
-        board,
-        day,
-        agora,
-        cards_dir,
-        slots_fixos=slots_ids,
-        sobras_fixas=[(item.store, item.id) for item in fila.sobras],
-        bloqueados_fixos=[(item.item.store, item.item.id) for item in fila.bloqueados],
-        livros_extra=extras,
-        **kwargs,
-    )
+    try:
+        notice = publish_selection(
+            catalog,
+            board,
+            day,
+            agora,
+            cards_dir,
+            slots_fixos=slots_ids,
+            sobras_fixas=[(item.store, item.id) for item in fila.sobras],
+            bloqueados_fixos=[(item.item.store, item.item.id) for item in fila.bloqueados],
+            livros_extra=extras,
+            **kwargs,
+        )
+    finally:
+        _restore_campaign_posts(board, day, campaign_posts)
     dropped = len(fila.bloqueados)
     if dropped:
         notice = f"{notice} {dropped} já tinham saído e ficaram de fora."
     return notice
+
+
+def _restore_campaign_posts(board, day: str, campaign_posts: list) -> None:
+    """Recoloca os posts de campanha que a troca da fila marcou como substituídos, com o mesmo conteúdo."""
+    still_scheduled = {post.id for post in board.posts_for(day)}
+    for post in campaign_posts:
+        if post.id in still_scheduled:
+            continue
+        board.add_campaign_post(
+            day,
+            post.clock,
+            campaign_id=post.campaign_id,
+            image_id=post.image_id,
+            text_id=post.text_id,
+            caption=post.caption,
+            image_path=post.image_path,
+            locked_at=post.campaign_locked_at,
+        )
 
 
 def fingerprint(board, catalog, day: str) -> str:
@@ -316,6 +368,7 @@ def _payload(fila, posts, catalog) -> dict:
                 "shopee": slot.shopee.id if slot.shopee else "",
                 "magalu": slot.magalu.id if slot.magalu else "",
                 "extra": slot.extra.id if slot.extra else "",
+                "is_campaign": slot.is_campaign,
             }
             for slot in fila.slots
         ],
@@ -359,6 +412,8 @@ def _slot_json(slot) -> dict:
         "shopee": _item_json(slot.shopee, slot.shopee_avisos),
         "magalu": _item_json(slot.magalu, slot.magalu_avisos),
         "extra": _item_json(slot.extra, slot.extra_avisos),
+        "is_campaign": slot.is_campaign,
+        "label": CAMPAIGN_LABEL if slot.is_campaign else "",
     }
 
 
@@ -383,6 +438,8 @@ def _diff_json(row) -> dict:
 
 
 def _titulo_slot(slot) -> str:
+    if slot.is_campaign:
+        return CAMPAIGN_LABEL
     titles = [
         item.title for item in (slot.amazon, slot.ml, slot.shopee, slot.magalu, slot.extra) if item is not None
     ]
@@ -420,7 +477,8 @@ def _posts_enviados(board, day: str):
     with board._lock:
         found = board._connection.execute(
             """
-            SELECT id, day, position, clock, caption, image_path, status
+            SELECT id, day, position, clock, caption, image_path, status,
+                   post_kind, campaign_id, image_id, text_id, campaign_locked_at
             FROM scheduled_posts
             WHERE day >= ? AND day <= ? AND status = 'sent'
             ORDER BY day, clock, id
@@ -530,6 +588,11 @@ def _salvar_desfazer(board, catalog, day: str) -> None:
                 "clock": post.clock,
                 "caption": post.caption,
                 "image_path": post.image_path,
+                "post_kind": post.post_kind,
+                "campaign_id": post.campaign_id,
+                "image_id": post.image_id,
+                "text_id": post.text_id,
+                "campaign_locked_at": post.campaign_locked_at,
                 "books": [
                     {
                         "title": book.title,

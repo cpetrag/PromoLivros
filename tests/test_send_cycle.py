@@ -48,7 +48,7 @@ def calls(monkeypatch: pytest.MonkeyPatch) -> dict[str, dict[str, object]]:
         seen["invite"] = {"root": root, "quiet_since": quiet_since}
         return "idle"
 
-    def queue(config, board, client, *, root, now, quiet_since):
+    def queue(config, board, client, *, root, now, quiet_since, campaigns=None):
         seen["queue"] = {"root": root, "quiet_since": quiet_since}
         return "idle"
 
@@ -56,6 +56,11 @@ def calls(monkeypatch: pytest.MonkeyPatch) -> dict[str, dict[str, object]]:
         seen["poll"] = {"gap_seconds": gap_seconds, "other_sent_at": other_sent_at}
         return "idle"
 
+    def fixed(config, board, campaigns, client, *, root, now, quiet_since):
+        seen["fixed"] = {"root": root, "quiet_since": quiet_since}
+        return "idle"
+
+    monkeypatch.setattr(send_cycle, "publish_due_fixed_campaigns", fixed)
     monkeypatch.setattr(send_cycle, "publish_due_invite", invite)
     monkeypatch.setattr(send_cycle, "publish_due", queue)
     monkeypatch.setattr(send_cycle, "advance_polls", poll)
@@ -125,6 +130,39 @@ def test_failed_queue_still_runs_polls(monkeypatch: pytest.MonkeyPatch, calls) -
 
     assert result == CycleResult(invite="idle", queue="failed", poll="idle")
     assert "poll" in calls
+
+
+def test_fixed_campaigns_run_before_the_last_invite(monkeypatch: pytest.MonkeyPatch, calls) -> None:
+    order: list[str] = []
+
+    def fixed(*args, **kwargs):
+        order.append("fixed")
+        return "sent"
+
+    def invite(*args, **kwargs):
+        order.append("invite")
+        return "idle"
+
+    monkeypatch.setattr(send_cycle, "publish_due_fixed_campaigns", fixed)
+    monkeypatch.setattr(send_cycle, "publish_due_invite", invite)
+
+    result = _run(FakeBoard(), FakePolls(), FakeCampaigns())
+
+    assert order == ["fixed", "invite"]
+    assert result.fixed == "sent"
+
+
+def test_failed_fixed_step_does_not_block_the_rest(monkeypatch: pytest.MonkeyPatch, calls) -> None:
+    def fixed_breaks(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(send_cycle, "publish_due_fixed_campaigns", fixed_breaks)
+
+    result = _run(FakeBoard(), FakePolls(), FakeCampaigns())
+
+    assert result.fixed == "failed"
+    assert result.failed
+    assert "invite" in calls and "queue" in calls and "poll" in calls
 
 
 def test_quiet_cycle_is_not_failed() -> None:

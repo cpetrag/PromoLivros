@@ -8,6 +8,8 @@ from pathlib import Path
 
 
 CLOCK_UNDO_SECONDS = 10 * 60
+POST_KIND_BOOK = "book"
+POST_KIND_CAMPAIGN = "campaign"
 
 
 @dataclass(frozen=True)
@@ -34,6 +36,11 @@ class BoardPost:
     caption: str
     image_path: str
     books: tuple[BoardBook, ...]
+    post_kind: str = POST_KIND_BOOK
+    campaign_id: int | None = None
+    image_id: int | None = None
+    text_id: int | None = None
+    campaign_locked_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -77,6 +84,10 @@ class FeedPost:
     live_price_cents: int | None = None
     day: str = ""
     shelf: tuple[FeedBook, ...] = ()
+    post_kind: str = POST_KIND_BOOK
+    campaign_id: int | None = None
+    image_id: int | None = None
+    text_id: int | None = None
 
 
 class BoardStore:
@@ -140,6 +151,11 @@ class BoardStore:
         _add_column(self._connection, "scheduled_books", "alt_url", "TEXT NOT NULL DEFAULT ''")
         _add_column(self._connection, "scheduled_books", "alt_price_cents", "INTEGER")
         _add_column(self._connection, "scheduled_books", "product_id", "TEXT NOT NULL DEFAULT ''")
+        _add_column(self._connection, "scheduled_posts", "post_kind", "TEXT NOT NULL DEFAULT 'book'")
+        _add_column(self._connection, "scheduled_posts", "campaign_id", "INTEGER")
+        _add_column(self._connection, "scheduled_posts", "image_id", "INTEGER")
+        _add_column(self._connection, "scheduled_posts", "text_id", "INTEGER")
+        _add_column(self._connection, "scheduled_posts", "campaign_locked_at", "TEXT")
         self._connection.commit()
 
     def sending_enabled(self) -> bool:
@@ -432,7 +448,7 @@ class BoardStore:
     def _feeds(self, where: str, params: tuple, *, order: str, stamp_day: bool = False) -> list[FeedPost]:
         rows = self._connection.execute(
             f"""
-            SELECT id, day, clock, status, caption
+            SELECT id, day, clock, status, caption, post_kind, campaign_id, image_id, text_id
             FROM scheduled_posts
             WHERE {where}
             ORDER BY {order}
@@ -490,6 +506,10 @@ class BoardStore:
                     link_state=check["state"] if check else "",
                     live_price_cents=check["live_cents"] if check else None,
                     day=str(row["day"] or "") if stamp_day else "",
+                    post_kind=str(row["post_kind"] or POST_KIND_BOOK),
+                    campaign_id=row["campaign_id"],
+                    image_id=row["image_id"],
+                    text_id=row["text_id"],
                     shelf=tuple(
                         FeedBook(
                             title=item["title"],
@@ -511,7 +531,8 @@ class BoardStore:
     def _posts_for(self, day: str) -> list[BoardPost]:
         rows = self._connection.execute(
             """
-            SELECT id, day, position, clock, caption, image_path
+            SELECT id, day, position, clock, caption, image_path,
+                       post_kind, campaign_id, image_id, text_id, campaign_locked_at
             FROM scheduled_posts
             WHERE day = ? AND status = 'scheduled'
             ORDER BY clock, position, id
@@ -585,6 +606,64 @@ class BoardStore:
             post_id = int(cursor.lastrowid)
             self._insert_books(post_id, books)
         return post_id
+
+    def add_campaign_post(
+        self,
+        day: str,
+        clock: str,
+        *,
+        campaign_id: int | None = None,
+        image_id: int | None = None,
+        text_id: int | None = None,
+        caption: str = "",
+        image_path: str = "",
+        locked_at: str | None = None,
+    ) -> int:
+        """Post de campanha na fila. Não leva livros; o conteúdo vem da campanha."""
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                """
+                INSERT INTO scheduled_posts (
+                    day, position, clock, status, caption, image_path,
+                    post_kind, campaign_id, image_id, text_id, campaign_locked_at
+                ) VALUES (?, ?, ?, 'scheduled', ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    day,
+                    self._next_position(day),
+                    clock,
+                    caption,
+                    image_path,
+                    POST_KIND_CAMPAIGN,
+                    campaign_id,
+                    image_id,
+                    text_id,
+                    locked_at,
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def set_campaign_content(
+        self,
+        post_id: int,
+        campaign_id: int | None,
+        image_id: int | None,
+        text_id: int | None,
+        caption: str,
+        image_path: str,
+        locked_at: str | None,
+    ) -> None:
+        """Troca o conteúdo de um post de campanha que ainda está na fila."""
+        with self._lock, self._connection:
+            self._connection.execute(
+                """
+                UPDATE scheduled_posts
+                SET campaign_id = ?, image_id = ?, text_id = ?, caption = ?,
+                    image_path = ?, campaign_locked_at = ?
+                WHERE id = ? AND post_kind = ? AND status = 'scheduled'
+                """,
+                (campaign_id, image_id, text_id, caption, image_path, locked_at, post_id, POST_KIND_CAMPAIGN),
+            )
 
     def shift(self, day: str, post_id: int, direction: int) -> None:
         with self._lock:
@@ -788,7 +867,11 @@ class BoardStore:
             try:
                 for post_id, (expected, books, caption) in changes.items():
                     row = self._connection.execute(
-                        "SELECT id, day, position, clock, caption, image_path, status FROM scheduled_posts WHERE id = ?",
+                        """
+                        SELECT id, day, position, clock, caption, image_path,
+                               post_kind, campaign_id, image_id, text_id, campaign_locked_at, status
+                        FROM scheduled_posts WHERE id = ?
+                        """,
                         (post_id,),
                     ).fetchone()
                     if row is None or row["day"] != day or row["status"] != "scheduled":
@@ -929,7 +1012,8 @@ class BoardStore:
         with self._lock:
             row = self._connection.execute(
                 """
-                SELECT id, day, position, clock, caption, image_path
+                SELECT id, day, position, clock, caption, image_path,
+                       post_kind, campaign_id, image_id, text_id, campaign_locked_at
                 FROM scheduled_posts
                 WHERE id = ?
                 """,
@@ -975,7 +1059,8 @@ class BoardStore:
                 return "Não há preço novo para este post."
             row = self._connection.execute(
                 """
-                SELECT id, day, position, clock, caption, image_path, status
+                SELECT id, day, position, clock, caption, image_path,
+                       post_kind, campaign_id, image_id, text_id, campaign_locked_at, status
                 FROM scheduled_posts
                 WHERE id = ? AND day = ?
                 """,
@@ -1010,7 +1095,8 @@ class BoardStore:
             if rush and rush.isdigit():
                 rushed = self._connection.execute(
                     """
-                    SELECT id, day, position, clock, caption, image_path
+                    SELECT id, day, position, clock, caption, image_path,
+                       post_kind, campaign_id, image_id, text_id, campaign_locked_at
                     FROM scheduled_posts
                     WHERE id = ? AND day = ? AND status = 'scheduled'
                     """,
@@ -1024,7 +1110,8 @@ class BoardStore:
                     )
             row = self._connection.execute(
                 """
-                SELECT id, day, position, clock, caption, image_path
+                SELECT id, day, position, clock, caption, image_path,
+                       post_kind, campaign_id, image_id, text_id, campaign_locked_at
                 FROM scheduled_posts
                 WHERE day = ? AND status = 'scheduled' AND clock <= ? AND clock < ?
                 ORDER BY clock, position, id
@@ -1113,7 +1200,8 @@ class BoardStore:
         with self._lock, self._connection:
             post_row = self._connection.execute(
                 """
-                SELECT id, day, position, clock, caption, image_path, status
+                SELECT id, day, position, clock, caption, image_path,
+                       post_kind, campaign_id, image_id, text_id, campaign_locked_at, status
                 FROM scheduled_posts
                 WHERE id = ?
                 """,
@@ -1147,7 +1235,8 @@ class BoardStore:
         with self._lock:
             rows = self._connection.execute(
                 """
-                SELECT id, day, position, clock, caption, image_path
+                SELECT id, day, position, clock, caption, image_path,
+                       post_kind, campaign_id, image_id, text_id, campaign_locked_at
                 FROM scheduled_posts
                 WHERE status = 'scheduled'
                   AND NOT EXISTS (
@@ -1185,7 +1274,8 @@ class BoardStore:
                     )
                 post_row = self._connection.execute(
                     """
-                    SELECT id, day, position, clock, caption, image_path
+                    SELECT id, day, position, clock, caption, image_path,
+                       post_kind, campaign_id, image_id, text_id, campaign_locked_at
                     FROM scheduled_posts
                     WHERE id = ? AND status = 'scheduled'
                     """,
@@ -1333,6 +1423,11 @@ class BoardStore:
             clock=row["clock"],
             caption=row["caption"],
             image_path=row["image_path"],
+            post_kind=str(row["post_kind"] or POST_KIND_BOOK),
+            campaign_id=row["campaign_id"],
+            image_id=row["image_id"],
+            text_id=row["text_id"],
+            campaign_locked_at=row["campaign_locked_at"],
             books=tuple(
                 BoardBook(
                     title=item["title"],

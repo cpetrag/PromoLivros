@@ -1,10 +1,14 @@
 """Regras dos convites: horários, rodízio e sorteio. Sem banco e sem rede."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from datetime import date
 from random import Random
 
 from promo_livros.send_schedule import clock_minutes, format_clock
+
+_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 INVITE_FIXED = "fixed"
 INVITE_LAST = "last"
@@ -41,6 +45,34 @@ def invite_settings(raw_fixed: str | None, raw_offset: str | None) -> InviteSett
     except ValueError:
         offset = DEFAULT_LAST_OFFSET_MINUTES
     return InviteSettings(fixed, offset)
+
+
+def parse_campaign_clock(raw: str) -> str | None:
+    value = raw.strip()
+    if not value:
+        return None
+    clock_minutes(value, "Horário fixo da campanha")
+    return value
+
+
+def parse_valid_until(raw: str) -> str | None:
+    value = raw.strip()
+    if not value:
+        return None
+    if _DATE.fullmatch(value) is None:
+        raise ValueError("A validade usa o formato AAAA-MM-DD.")
+    date.fromisoformat(value)  # rejeita 2026-13-40
+    return value
+
+
+def campaign_valid_on(valid_until: str | None, day: str) -> bool:
+    if valid_until is None:
+        return True
+    return day <= valid_until
+
+
+def is_rotating(fixed_clock: str | None) -> bool:
+    return fixed_clock is None
 
 
 def parse_fixed_clock(raw: str, taken_clocks: set[str]) -> str | None:

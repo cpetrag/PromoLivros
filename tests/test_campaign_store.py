@@ -1,9 +1,41 @@
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 
 from promo_livros.campaign_rules import INVITE_FIXED, INVITE_LAST, RotationEntry
 from promo_livros.campaign_store import MAX_NAME_LENGTH, MAX_TEXT_LENGTH, CampaignError, CampaignStore
+
+# Esquema anterior às campanhas fixas/rotativas, para provar a migração de bancos já existentes.
+_LEGACY_SCHEMA = """
+CREATE TABLE campaigns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    position INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE campaign_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    day TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('fixed', 'last')),
+    campaign_id INTEGER,
+    manual INTEGER NOT NULL DEFAULT 0,
+    image_id INTEGER,
+    text_id INTEGER,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sending', 'sent', 'skipped')),
+    locked_at TEXT,
+    sent_at TEXT,
+    UNIQUE (day, kind)
+);
+CREATE TABLE campaign_run_groups (
+    run_id INTEGER NOT NULL REFERENCES campaign_runs(id) ON DELETE CASCADE,
+    chat_id TEXT NOT NULL,
+    message_id TEXT,
+    sent_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, chat_id)
+);
+"""
 
 
 class CampaignStoreTests(unittest.TestCase):
@@ -245,6 +277,159 @@ class CampaignStoreTests(unittest.TestCase):
         with self.assertRaises(CampaignError):
             self.store.rename(campaign_id, long_name)
         self.assertEqual(self.store.campaign(campaign_id).name, "A")
+
+    def test_schedule_fields_and_ready_pools(self) -> None:
+        store = self.store
+        rotating = store.create("Rotativa")
+        fixed = store.create("Fixa")
+        store.add_image(rotating, "data/campaigns/1/a.jpg")
+        store.add_text(rotating, "texto a")
+        store.add_image(fixed, "data/campaigns/2/b.jpg")
+        store.add_text(fixed, "texto b")
+        store.set_schedule(fixed, "10:00", "2026-11-20")
+        self.assertEqual([c.id for c in store.ready_rotating("2026-11-19")], [rotating])
+        self.assertEqual([c.id for c in store.ready_fixed("2026-11-19")], [fixed])
+        self.assertEqual(store.ready_fixed("2026-11-21"), [])
+
+    def test_two_fixed_campaigns_same_clock_same_day(self) -> None:
+        store = self.store
+        a = store.create("A")
+        b = store.create("B")
+        for cid in (a, b):
+            store.add_image(cid, f"p{cid}.jpg")
+            store.add_text(cid, "oi")
+            store.set_schedule(cid, "10:00", None)
+        run_a = store.run_for_clock("2026-11-19", a, "10:00")
+        run_b = store.run_for_clock("2026-11-19", b, "10:00")
+        self.assertNotEqual(run_a.id, run_b.id)
+        self.assertEqual(run_a.clock, "10:00")
+        self.assertEqual(run_a.kind, "clock")
+        self.assertEqual(run_a.campaign_id, a)
+        self.assertEqual(store.run_for_clock("2026-11-19", a, "10:00").id, run_a.id)
+
+    def test_peek_clock_run_reads_without_creating(self) -> None:
+        campaign_id = self.store.create("A")
+        self.assertIsNone(self.store.peek_clock_run("2026-11-19", campaign_id))
+        created = self.store.run_for_clock("2026-11-19", campaign_id, "10:00")
+        peeked = self.store.peek_clock_run("2026-11-19", campaign_id)
+        self.assertEqual(peeked.id, created.id)
+        self.assertIsNone(self.store.peek_clock_run("2026-11-20", campaign_id))
+
+    def test_set_schedule_stores_and_clears_values(self) -> None:
+        campaign_id = self.store.create("A")
+        self.store.set_schedule(campaign_id, " 09:30 ", "2026-12-31")
+        campaign = self.store.campaign(campaign_id)
+        self.assertEqual((campaign.fixed_clock, campaign.valid_until), ("09:30", "2026-12-31"))
+        self.store.set_schedule(campaign_id, None, None)
+        campaign = self.store.campaign(campaign_id)
+        self.assertEqual((campaign.fixed_clock, campaign.valid_until), (None, None))
+
+    def test_set_schedule_rejects_bad_values(self) -> None:
+        campaign_id = self.store.create("A")
+        with self.assertRaises(CampaignError):
+            self.store.set_schedule(campaign_id, "25:00", None)
+        with self.assertRaises(CampaignError):
+            self.store.set_schedule(campaign_id, None, "2026-13-40")
+        with self.assertRaises(CampaignError):
+            self.store.set_schedule(campaign_id, None, "20/11/2026")
+        campaign = self.store.campaign(campaign_id)
+        self.assertEqual((campaign.fixed_clock, campaign.valid_until), (None, None))
+
+    def test_ready_on_requires_validity(self) -> None:
+        campaign_id = self.store.create("A")
+        self.store.add_image(campaign_id, "a.jpg")
+        self.store.add_text(campaign_id, "oi")
+        self.store.set_schedule(campaign_id, None, "2026-11-19")
+        campaign = self.store.campaign(campaign_id)
+        self.assertTrue(campaign.ready_on("2026-11-19"))
+        self.assertFalse(campaign.ready_on("2026-11-20"))
+        self.store.set_active(campaign_id, False)
+        self.assertFalse(self.store.campaign(campaign_id).ready_on("2026-11-19"))
+
+    def test_last_used_rotating_ignores_fixed_campaigns_and_clock_runs(self) -> None:
+        rotating = self.store.create("Rotativa")
+        fixed = self.store.create("Fixa")
+        self.store.set_schedule(fixed, "10:00", None)
+        self.assertIsNone(self.store.last_used_rotating())
+        early = self.store.run_for("2026-11-03", INVITE_LAST)
+        self.store.lock_content(early.id, rotating, 1, 1, "2026-11-03T22:00:00-03:00")
+        late = self.store.run_for("2026-11-04", INVITE_LAST)
+        self.store.lock_content(late.id, fixed, 2, 2, "2026-11-04T22:00:00-03:00")
+        clock_run = self.store.run_for_clock("2026-11-05", rotating, "11:00")
+        self.store.lock_content(clock_run.id, rotating, 3, 3, "2026-11-05T11:00:00-03:00")
+        self.assertEqual(self.store.last_used_rotating(), RotationEntry(rotating, 1))
+
+    def test_old_database_is_migrated_keeping_runs_and_groups(self) -> None:
+        path = Path(self.folder.name) / "old.sqlite"
+        legacy = sqlite3.connect(path)
+        legacy.executescript(_LEGACY_SCHEMA)
+        legacy.execute("INSERT INTO campaigns (name, position, created_at) VALUES ('A', 1, 'x')")
+        legacy.execute("INSERT INTO campaign_runs (day, kind, campaign_id) VALUES ('2026-11-03', 'fixed', 1)")
+        legacy.execute("INSERT INTO campaign_run_groups (run_id, chat_id, sent_at) VALUES (1, 'a@g.us', 'x')")
+        legacy.commit()
+        legacy.close()
+        store = CampaignStore(path)
+        try:
+            self.assertEqual(store.campaign(1).fixed_clock, None)
+            self.assertEqual(store.run(1).clock, None)
+            self.assertEqual(store.sent_chat_ids(1), {"a@g.us"})
+            self.assertEqual(store.run_for("2026-11-03", INVITE_FIXED).id, 1)
+            run = store.run_for_clock("2026-11-03", 1, "10:00")
+            self.assertEqual(run.kind, "clock")
+            self.assertEqual(store.run_for("2026-11-03", INVITE_LAST).kind, "last")
+        finally:
+            store.close()
+        reopened = CampaignStore(path)
+        reopened.close()
+
+    def _legacy_database(self, name: str) -> Path:
+        path = Path(self.folder.name) / name
+        legacy = sqlite3.connect(path)
+        legacy.executescript(_LEGACY_SCHEMA)
+        legacy.execute("INSERT INTO campaigns (name, position, created_at) VALUES ('A', 1, 'x')")
+        legacy.execute("INSERT INTO campaign_runs (day, kind, campaign_id) VALUES ('2026-11-03', 'fixed', 1)")
+        legacy.execute("INSERT INTO campaign_run_groups (run_id, chat_id, sent_at) VALUES (1, 'a@g.us', 'x')")
+        legacy.commit()
+        legacy.close()
+        return path
+
+    def test_migration_survives_orphan_campaign_runs_new_from_an_interrupted_run(self) -> None:
+        path = self._legacy_database("orphan.sqlite")
+        leftover = sqlite3.connect(path)
+        leftover.execute("CREATE TABLE campaign_runs_new (id INTEGER PRIMARY KEY, junk TEXT)")
+        leftover.commit()
+        leftover.close()
+        store = CampaignStore(path)
+        try:
+            self.assertEqual(store.run(1).day, "2026-11-03")
+            self.assertEqual(store.sent_chat_ids(1), {"a@g.us"})
+            inspector = sqlite3.connect(path)
+            try:
+                names = {row[0] for row in inspector.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+            finally:
+                inspector.close()
+            self.assertNotIn("campaign_runs_new", names)
+        finally:
+            store.close()
+
+    def test_failed_migration_rolls_back_and_keeps_history(self) -> None:
+        path = self._legacy_database("rollback.sqlite")
+        blocker = sqlite3.connect(path)
+        # Um índice com o nome da tabela nova faz o CREATE falhar no meio da reconstrução.
+        blocker.execute("CREATE INDEX campaign_runs_new ON campaign_runs(day)")
+        blocker.commit()
+        blocker.close()
+        with self.assertRaises(sqlite3.Error):
+            CampaignStore(path)
+        check = sqlite3.connect(path)
+        try:
+            self.assertEqual(check.execute("SELECT COUNT(*) FROM campaign_runs").fetchone()[0], 1)
+            self.assertEqual(check.execute("SELECT COUNT(*) FROM campaign_run_groups").fetchone()[0], 1)
+            self.assertNotIn("'clock'", check.execute(
+                "SELECT sql FROM sqlite_master WHERE name = 'campaign_runs' AND type = 'table'"
+            ).fetchone()[0])
+        finally:
+            check.close()
 
     def test_move_down_and_noop_at_bottom(self) -> None:
         first = self.store.create("A")

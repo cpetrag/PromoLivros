@@ -74,6 +74,30 @@ class PageTests(unittest.TestCase):
         self.assertIn("Programar post", html)
         self.assertIn('href="/enquetes">Enquetes</a>', html)
 
+    def test_board_grade_row_of_a_campaign_post_has_the_swap_form(self) -> None:
+        from promo_livros.board_store import POST_KIND_CAMPAIGN, FeedPost
+        from promo_livros.dashboard_pages import render_board
+        from promo_livros.send_schedule import default_schedule
+
+        campaign_post = FeedPost(
+            11, "11:00", "scheduled", "Entre no grupo", 0, None, "", (),
+            caption="Entre no grupo", post_kind=POST_KIND_CAMPAIGN, campaign_id=2, image_id=3, text_id=4,
+        )
+        book_post = FeedPost(12, "12:00", "scheduled", "Um livro", 1000, None, "https://www.amazon.com.br/dp/B000000001", ())
+        form = '<form class="campaign-swap" method="post" action="/hoje/campanha-post"><input name="post_id" value="11"></form>'
+        html = render_board(
+            "2026-10-03",
+            [campaign_post, book_post],
+            notice=None,
+            sending=True,
+            schedule=default_schedule(),
+            campaign_forms={11: form},
+        )
+        row = html[html.index('data-id="11"'):html.index('data-id="12"')]
+        self.assertIn('action="/hoje/campanha-post"', row)
+        self.assertIn('data-kind="campaign"', row)
+        self.assertEqual(html.count('class="campaign-swap"'), 1)
+
     def test_sent_posts_stay_on_the_sent_tab(self) -> None:
         from promo_livros.board_store import FeedPost
         from promo_livros.dashboard_pages import render_board, render_settings
@@ -515,6 +539,15 @@ website:
             self.assertEqual(path.read_bytes(), original)
 
 
+CAMPAIGN_FORM_PATHS = (
+    "/campanhas/config",
+    "/campanhas/acao",
+    "/campanhas/gerar",
+    "/hoje/convite",
+    "/hoje/campanha-post",
+)
+
+
 class CampaignRouteTests(unittest.TestCase):
     def setUp(self) -> None:
         self.calls: list[tuple] = []
@@ -547,6 +580,8 @@ class CampaignRouteTests(unittest.TestCase):
             "image": image,
             "invites": lambda: "",
             "choose": choose,
+            "generate": record("generate", "/campanhas/3"),
+            "swap_post": record("swap_post", "ok"),
             "notify": lambda message: self.calls.append(("notify", message)),
         }
         self.app = DashboardApp(
@@ -688,7 +723,7 @@ class CampaignRouteTests(unittest.TestCase):
 
     def test_form_routes_need_login(self) -> None:
         body = b"acao=apagar&id=3"
-        for path in ("/campanhas/config", "/campanhas/acao", "/hoje/convite"):
+        for path in CAMPAIGN_FORM_PATHS:
             with self.subTest(path=path):
                 _status, _type, payload = _post_raw(
                     self.server, path, headers=self._form_headers(body, logged=False), data=body
@@ -703,7 +738,7 @@ class CampaignRouteTests(unittest.TestCase):
         self.assertEqual(status, 403)
         form_body = b"acao=apagar&id=3"
         form_headers = {**self._form_headers(form_body), "Origin": "http://evil.example"}
-        for path in ("/campanhas/config", "/campanhas/acao", "/hoje/convite"):
+        for path in CAMPAIGN_FORM_PATHS:
             with self.subTest(path=path):
                 status, _type, _payload = _post_raw(self.server, path, headers=form_headers, data=form_body)
                 self.assertEqual(status, 403)
@@ -747,9 +782,24 @@ class CampaignRouteTests(unittest.TestCase):
 
     def test_choose_invite_from_today(self) -> None:
         self.app.board = None
-        body = b"tipo=fixed&campanha=2"
+        body = b"tipo=last&campanha=2"
         _post_raw(self.server, "/hoje/convite", headers=self._form_headers(body), data=body)
-        self.assertEqual(self.calls, [("choose", ["fixed"])])
+        self.assertEqual(self.calls, [("choose", ["last"])])
+
+    def test_generate_texts_redirects_to_the_campaign(self) -> None:
+        body = b"id=3&count=5"
+        status, _type, payload = _post_raw(self.server, "/campanhas/gerar", headers=self._form_headers(body), data=body)
+        self.assertEqual(status, 200)
+        self.assertIn(b"Detalhe 3", payload)
+        self.assertEqual(self.calls, [("generate", {"id": ["3"], "count": ["5"]})])
+
+    def test_swap_campaign_post_from_today(self) -> None:
+        self.app.board = None
+        body = b"post_id=9&campaign_id=2&image_id=&text_id="
+        _post_raw(self.server, "/hoje/campanha-post", headers=self._form_headers(body), data=body)
+        self.assertEqual(len(self.calls), 1)
+        name, form = self.calls[0]
+        self.assertEqual((name, form["post_id"], form["campaign_id"]), ("swap_post", ["9"], ["2"]))
 
 
 def _post_raw(

@@ -10,8 +10,8 @@ from zoneinfo import ZoneInfo
 
 from promo_livros.board_store import BoardBook, BoardStore
 from promo_livros.campaign_images import read_image
-from promo_livros.campaign_rules import INVITE_FIXED, INVITE_LAST
-from promo_livros.campaign_send import publish_due_invite
+from promo_livros.campaign_rules import INVITE_LAST, INVITE_LAST
+from promo_livros.campaign_send import publish_due_fixed_campaigns, publish_due_invite
 from promo_livros.campaign_store import CampaignStore
 from promo_livros.models import WhatsAppGroup
 from promo_livros.send_schedule import parse_schedule
@@ -52,7 +52,6 @@ class InviteSendTests(unittest.TestCase):
         self.board = BoardStore(self.root / "board.sqlite")
         self.board.set_sending(True)
         self.board.save_send_schedule(parse_schedule("08:00", "22:00", "40", "45"))
-        self.board.put_setting("invite_fixed_clock", "13:15")
         self.campaigns = CampaignStore(self.root / "board.sqlite")
 
     def tearDown(self) -> None:
@@ -84,46 +83,45 @@ class InviteSendTests(unittest.TestCase):
             rng=Random(0),
         )
 
-    def test_fixed_invite_goes_to_each_group_with_the_same_content(self) -> None:
+    def test_last_invite_goes_to_each_group_with_the_same_content(self) -> None:
         self._campaign("A")
         sender = _Sender()
-        now = _at(13, 15)
+        now = _at(22, 10)
         self.assertEqual(self._invite(sender, now), "sent")
         self.assertEqual(self._invite(sender, now + timedelta(seconds=10)), "waiting")
         self.assertEqual(self._invite(sender, now + timedelta(seconds=45)), "sent")
         self.assertEqual([chat for chat, _caption, _image in sender.sent], [group.chat_id for group in GROUPS])
         self.assertEqual(sender.sent[0][1:], sender.sent[1][1:])
-        self.assertEqual(self.campaigns.run_for(DAY, INVITE_FIXED).status, "sent")
+        self.assertEqual(self.campaigns.run_for(DAY, INVITE_LAST).status, "sent")
         self.assertEqual(self._invite(sender, now + timedelta(minutes=5)), "idle")
 
-    def test_fixed_invite_waits_for_its_clock_and_gives_up_after_the_window(self) -> None:
+    def test_last_invite_waits_for_its_clock(self) -> None:
         self._campaign("A")
         sender = _Sender()
-        self.assertEqual(self._invite(sender, _at(13, 14)), "idle")
+        self.assertEqual(self._invite(sender, _at(22, 9)), "idle")
         self.assertEqual(self._invite(sender, _at(14, 15)), "idle")
         self.assertEqual(sender.sent, [])
-        self.assertEqual(self.campaigns.run_for(DAY, INVITE_FIXED).status, "pending")
+        self.assertEqual(self.campaigns.run_for(DAY, INVITE_LAST).status, "pending")
 
     def test_sending_off_does_nothing(self) -> None:
         self._campaign("A")
         self.board.set_sending(False)
-        self.assertEqual(self._invite(_Sender(), _at(13, 15)), "off")
+        self.assertEqual(self._invite(_Sender(), _at(22, 10)), "off")
 
-    def test_rotation_alternates_between_the_two_invites(self) -> None:
+    def test_rotation_alternates_between_the_days(self) -> None:
         self._campaign("A", text="Texto A")
         self._campaign("B", text="Texto B")
         sender = _Sender()
-        self._invite(sender, _at(13, 15))
-        self._invite(sender, _at(13, 16))
-        self.assertEqual(self._invite(sender, _at(22, 9)), "idle")
         self._invite(sender, _at(22, 10))
+        self._invite(sender, _at(22, 11))
+        self.assertEqual(self._invite(sender, _at(22, 9, day=4)), "idle")
+        self._invite(sender, _at(22, 10, day=4))
         self.assertEqual([caption for _chat, caption, _image in sender.sent], ["Texto A", "Texto A", "Texto B"])
 
     def test_last_invite_waits_for_the_queue(self) -> None:
         self._campaign("A")
         book = BoardBook("Livro", "", 1000, 2000, 50, "Menor preço.", "https://example", "")
         post_id = self.board.add_post(day=DAY, clock="21:20", caption="*Livro*", image_path="data/cards/1.jpg", books=[book])
-        self.board.put_setting("invite_fixed_clock", "")
         sender = _Sender()
         self.assertEqual(self._invite(sender, _at(21, 35)), "idle")
         self.board.mark_sent(post_id)
@@ -133,68 +131,68 @@ class InviteSendTests(unittest.TestCase):
     def test_manual_choice_wins_over_rotation(self) -> None:
         self._campaign("A", text="Texto A")
         chosen = self._campaign("B", text="Texto B")
-        self.campaigns.set_manual_campaign(DAY, INVITE_FIXED, chosen)
+        self.campaigns.set_manual_campaign(DAY, INVITE_LAST, chosen)
         sender = _Sender()
-        self._invite(sender, _at(13, 15))
+        self._invite(sender, _at(22, 10))
         self.assertEqual(sender.sent[0][1], "Texto B")
 
     def test_no_ready_campaign_skips_the_invite(self) -> None:
         sender = _Sender()
-        self.assertEqual(self._invite(sender, _at(13, 15)), "skipped")
-        self.assertEqual(self._invite(sender, _at(13, 16)), "idle")
-        self.assertEqual(self.campaigns.run_for(DAY, INVITE_FIXED).status, "skipped")
+        self.assertEqual(self._invite(sender, _at(22, 10)), "skipped")
+        self.assertEqual(self._invite(sender, _at(22, 11)), "idle")
+        self.assertEqual(self.campaigns.run_for(DAY, INVITE_LAST).status, "skipped")
 
     def test_missing_photo_moves_to_the_next_campaign(self) -> None:
         broken = self._campaign("A", text="Texto A")
         self._campaign("B", text="Texto B")
         (self.root / f"data/campaigns/{broken}/0.jpg").unlink()
         sender = _Sender()
-        self.assertEqual(self._invite(sender, _at(13, 15)), "sent")
+        self.assertEqual(self._invite(sender, _at(22, 10)), "sent")
         self.assertEqual(sender.sent[0][1], "Texto B")
 
     def test_a_recent_message_holds_the_invite(self) -> None:
         self._campaign("A")
         sender = _Sender()
-        now = _at(13, 15)
+        now = _at(22, 10)
         quiet = (now - timedelta(seconds=10)).isoformat(timespec="seconds")
         self.assertEqual(self._invite(sender, now, quiet_since=quiet), "waiting")
         self.assertEqual(sender.sent, [])
 
     def test_disconnected_session_keeps_the_invite_pending(self) -> None:
         self._campaign("A")
-        self.assertEqual(self._invite(_Sender(state="disconnected"), _at(13, 15)), "disconnected")
-        self.assertEqual(self.campaigns.run_for(DAY, INVITE_FIXED).status, "pending")
+        self.assertEqual(self._invite(_Sender(state="disconnected"), _at(22, 10)), "disconnected")
+        self.assertEqual(self.campaigns.run_for(DAY, INVITE_LAST).status, "pending")
 
     def test_session_down_retries_the_same_group(self) -> None:
         self._campaign("A")
         down = _Sender(fail=WahaError("sem sessão", session_down=True))
-        self.assertEqual(self._invite(down, _at(13, 15)), "waiting")
+        self.assertEqual(self._invite(down, _at(22, 10)), "waiting")
         sender = _Sender()
-        self.assertEqual(self._invite(sender, _at(13, 16)), "sent")
+        self.assertEqual(self._invite(sender, _at(22, 11)), "sent")
         self.assertEqual(sender.sent[0][0], GROUPS[0].chat_id)
 
     def test_next_day_avoids_the_last_photo(self) -> None:
         self._campaign("A", images=2)
         sender = _Sender()
-        self._invite(sender, _at(13, 15))
-        self._invite(sender, _at(13, 16))
-        self._invite(sender, _at(13, 15, day=4))
+        self._invite(sender, _at(22, 10))
+        self._invite(sender, _at(22, 11))
+        self._invite(sender, _at(22, 10, day=4))
         self.assertNotEqual(sender.sent[0][2], sender.sent[2][2])
 
     def test_run_finished_elsewhere_is_not_skipped_or_sent(self) -> None:
         self._campaign("A")
-        run = self.campaigns.run_for(DAY, INVITE_FIXED)
+        run = self.campaigns.run_for(DAY, INVITE_LAST)
         original_lock = self.campaigns.lock_content
 
         def lock_after_someone_finished(*args, **kwargs):
-            self.campaigns.mark_run_sent(run.id, "2026-11-03T13:15:00-03:00")
+            self.campaigns.mark_run_sent(run.id, "2026-11-03T22:10:00-03:00")
             return original_lock(*args, **kwargs)
 
         sender = _Sender()
         with patch.object(self.campaigns, "lock_content", side_effect=lock_after_someone_finished):
-            self.assertEqual(self._invite(sender, _at(13, 15)), "idle")
+            self.assertEqual(self._invite(sender, _at(22, 10)), "idle")
         self.assertEqual(sender.sent, [])
-        self.assertEqual(self.campaigns.run_for(DAY, INVITE_FIXED).status, "sent")
+        self.assertEqual(self.campaigns.run_for(DAY, INVITE_LAST).status, "sent")
 
     def test_manual_choice_made_during_the_draw_is_kept(self) -> None:
         self._campaign("A", text="Texto A")
@@ -202,16 +200,16 @@ class InviteSendTests(unittest.TestCase):
         original_lock = self.campaigns.lock_content
 
         def lock_after_a_manual_choice(*args, **kwargs):
-            self.campaigns.set_manual_campaign(DAY, INVITE_FIXED, chosen)
+            self.campaigns.set_manual_campaign(DAY, INVITE_LAST, chosen)
             return original_lock(*args, **kwargs)
 
         sender = _Sender()
         with patch.object(self.campaigns, "lock_content", side_effect=lock_after_a_manual_choice):
-            self.assertEqual(self._invite(sender, _at(13, 15)), "waiting")
+            self.assertEqual(self._invite(sender, _at(22, 10)), "waiting")
         self.assertEqual(sender.sent, [])
-        run = self.campaigns.run_for(DAY, INVITE_FIXED)
+        run = self.campaigns.run_for(DAY, INVITE_LAST)
         self.assertEqual((run.status, run.campaign_id, run.manual), ("pending", chosen, True))
-        self.assertEqual(self._invite(sender, _at(13, 16)), "sent")
+        self.assertEqual(self._invite(sender, _at(22, 11)), "sent")
         self.assertEqual(sender.sent[0][1], "Texto B")
 
     def test_unreadable_photo_is_logged_and_the_next_campaign_is_used(self) -> None:
@@ -226,20 +224,19 @@ class InviteSendTests(unittest.TestCase):
 
         with patch("promo_livros.campaign_send.read_image", side_effect=flaky_read):
             with self.assertLogs("promo_livros.campaign_send", level="WARNING"):
-                self.assertEqual(self._invite(sender, _at(13, 15)), "sent")
+                self.assertEqual(self._invite(sender, _at(22, 10)), "sent")
         self.assertEqual(sender.sent[0][1], "Texto B")
 
     def test_no_groups_configured(self) -> None:
         self._campaign("A")
         config = SimpleNamespace(whatsapp_groups=())
         result = publish_due_invite(
-            config, self.board, self.campaigns, _Sender(), root=self.root, now=_at(13, 15), rng=Random(0)
+            config, self.board, self.campaigns, _Sender(), root=self.root, now=_at(22, 10), rng=Random(0)
         )
         self.assertEqual(result, "no_groups")
 
     def test_last_invite_started_before_midnight_finishes_the_next_day(self) -> None:
         self._campaign("A")
-        self.board.put_setting("invite_fixed_clock", "")
         sender = _Sender()
         self.assertEqual(self._invite(sender, _at(23, 59)), "sent")
         self.assertEqual(self._invite(sender, _at(0, 1, day=4)), "sent")
@@ -253,27 +250,27 @@ class InviteSendTests(unittest.TestCase):
         self.campaigns.lock_content(stale.id, campaign_id, 1, 1, "2026-11-01T22:10:00-03:00")
         sender = _Sender()
         with self.assertLogs("promo_livros.campaign_send", level="WARNING") as logs:
-            self.assertEqual(self._invite(sender, _at(13, 15)), "sent")
+            self.assertEqual(self._invite(sender, _at(22, 10)), "sent")
         self.assertTrue(any("2026-11-01" in line for line in logs.output))
         self.assertEqual(self.campaigns.run_for("2026-11-01", INVITE_LAST).status, "sent")
-        self.assertEqual(self.campaigns.run_for(DAY, INVITE_FIXED).status, "sending")
+        self.assertEqual(self.campaigns.run_for(DAY, INVITE_LAST).status, "sending")
         self.assertEqual(sender.sent[0][0], GROUPS[0].chat_id)
 
     def test_resume_with_a_fresh_store_keeps_the_same_content(self) -> None:
         self._campaign("A", images=3)
         sender = _Sender()
-        self._invite(sender, _at(13, 15))
+        self._invite(sender, _at(22, 10))
         self.campaigns.close()
         self.campaigns = CampaignStore(self.root / "board.sqlite")
-        self.assertEqual(self._invite(sender, _at(13, 16)), "sent")
+        self.assertEqual(self._invite(sender, _at(22, 11)), "sent")
         self.assertEqual(sender.sent[0][1:], sender.sent[1][1:])
-        self.assertEqual(self.campaigns.run_for(DAY, INVITE_FIXED).status, "sent")
+        self.assertEqual(self.campaigns.run_for(DAY, INVITE_LAST).status, "sent")
 
     def test_rejected_send_fails_without_marking_the_group(self) -> None:
         self._campaign("A")
         refused = _Sender(fail=WahaError("WAHA recusou o envio. HTTP 500.", session_down=False))
-        self.assertEqual(self._invite(refused, _at(13, 15)), "failed")
-        run = self.campaigns.run_for(DAY, INVITE_FIXED)
+        self.assertEqual(self._invite(refused, _at(22, 10)), "failed")
+        run = self.campaigns.run_for(DAY, INVITE_LAST)
         self.assertEqual(self.campaigns.sent_chat_ids(run.id), set())
         self.assertEqual(run.status, "sending")
 
@@ -282,8 +279,8 @@ class InviteSendTests(unittest.TestCase):
         broken = _Sender(fail=RuntimeError("bug"))
         with self.assertLogs("promo_livros.campaign_send", level="ERROR"):
             with self.assertRaises(RuntimeError):
-                self._invite(broken, _at(13, 15))
-        run = self.campaigns.run_for(DAY, INVITE_FIXED)
+                self._invite(broken, _at(22, 10))
+        run = self.campaigns.run_for(DAY, INVITE_LAST)
         self.assertEqual(self.campaigns.sent_chat_ids(run.id), set())
 
     def test_crash_after_sending_never_sends_twice_to_the_same_group(self) -> None:
@@ -291,39 +288,198 @@ class InviteSendTests(unittest.TestCase):
         sender = _Sender()
         with patch.object(self.campaigns, "finish_group_send", side_effect=sqlite3.OperationalError("locked")):
             with self.assertRaises(sqlite3.OperationalError):
-                self._invite(sender, _at(13, 15))
-        self.assertEqual(self._invite(sender, _at(13, 16)), "sent")
+                self._invite(sender, _at(22, 10))
+        self.assertEqual(self._invite(sender, _at(22, 11)), "sent")
         self.assertEqual([chat for chat, _caption, _image in sender.sent], [group.chat_id for group in GROUPS])
 
     def test_claimed_group_is_not_sent(self) -> None:
         self._campaign("A")
         sender = _Sender()
         with patch.object(self.campaigns, "claim_group_send", return_value=False):
-            self.assertEqual(self._invite(sender, _at(13, 15)), "waiting")
+            self.assertEqual(self._invite(sender, _at(22, 10)), "waiting")
         self.assertEqual(sender.sent, [])
 
     def test_unreachable_locked_photo_waits_without_redrawing(self) -> None:
         self._campaign("A", images=3)
         sender = _Sender()
-        self._invite(sender, _at(13, 15))
-        locked = self.campaigns.run_for(DAY, INVITE_FIXED)
+        self._invite(sender, _at(22, 10))
+        locked = self.campaigns.run_for(DAY, INVITE_LAST)
         with patch("promo_livros.campaign_send.read_image", side_effect=OSError("share offline")):
             with self.assertLogs("promo_livros.campaign_send", level="WARNING"):
-                self.assertEqual(self._invite(sender, _at(13, 16)), "waiting")
-        after = self.campaigns.run_for(DAY, INVITE_FIXED)
+                self.assertEqual(self._invite(sender, _at(22, 11)), "waiting")
+        after = self.campaigns.run_for(DAY, INVITE_LAST)
         self.assertEqual((after.image_id, after.text_id), (locked.image_id, locked.text_id))
-        self.assertEqual(self._invite(sender, _at(13, 17)), "sent")
+        self.assertEqual(self._invite(sender, _at(22, 12)), "sent")
         self.assertEqual(sender.sent[0][1:], sender.sent[1][1:])
 
     def test_vanished_content_with_partial_send_closes_the_run(self) -> None:
         campaign_id = self._campaign("A")
         sender = _Sender()
-        self._invite(sender, _at(13, 15))
+        self._invite(sender, _at(22, 10))
         (self.root / f"data/campaigns/{campaign_id}/0.jpg").unlink()
         with self.assertLogs("promo_livros.campaign_send", level="WARNING"):
-            self.assertEqual(self._invite(sender, _at(13, 16)), "sent")
+            self.assertEqual(self._invite(sender, _at(22, 11)), "sent")
         self.assertEqual(len(sender.sent), 1)
-        self.assertEqual(self.campaigns.run_for(DAY, INVITE_FIXED).status, "sent")
+        self.assertEqual(self.campaigns.run_for(DAY, INVITE_LAST).status, "sent")
+
+
+class FixedCampaignSendTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.folder = tempfile.TemporaryDirectory()
+        self.root = Path(self.folder.name)
+        self.board = BoardStore(self.root / "board.sqlite")
+        self.board.set_sending(True)
+        self.board.save_send_schedule(parse_schedule("08:00", "22:00", "40", "45"))
+        self.campaigns = CampaignStore(self.root / "board.sqlite")
+
+    def tearDown(self) -> None:
+        self.campaigns.close()
+        self.board.close()
+        self.folder.cleanup()
+
+    def _campaign(
+        self, name: str, *, fixed_clock: str | None = None, valid_until: str | None = None, images: int = 1
+    ) -> int:
+        campaign_id = self.campaigns.create(name)
+        for index in range(images):
+            relative = f"data/campaigns/{campaign_id}/{index}.jpg"
+            path = self.root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(f"jpeg-{campaign_id}-{index}".encode())
+            self.campaigns.add_image(campaign_id, relative)
+        self.campaigns.add_text(campaign_id, f"Entre no {name}!")
+        self.campaigns.set_schedule(campaign_id, fixed_clock, valid_until)
+        return campaign_id
+
+    def _fixed(self, sender: _Sender, now: datetime) -> str:
+        return publish_due_fixed_campaigns(
+            SimpleNamespace(whatsapp_groups=GROUPS),
+            self.board,
+            self.campaigns,
+            sender,
+            root=self.root,
+            now=now,
+            rng=Random(0),
+        )
+
+    def _last(self, sender: _Sender, now: datetime) -> str:
+        return publish_due_invite(
+            SimpleNamespace(whatsapp_groups=GROUPS),
+            self.board,
+            self.campaigns,
+            sender,
+            root=self.root,
+            now=now,
+            rng=Random(0),
+        )
+
+    def test_fixed_campaign_fires_at_its_clock(self) -> None:
+        campaign_id = self._campaign("A", fixed_clock="10:00", images=3)
+        sender = _Sender()
+        now = _at(10, 5)
+        self.assertEqual(self._fixed(sender, now), "sent")
+        self.assertEqual(self._fixed(sender, now + timedelta(seconds=10)), "waiting")
+        self.assertEqual(self._fixed(sender, now + timedelta(seconds=45)), "sent")
+        self.assertEqual([chat for chat, _caption, _image in sender.sent], [group.chat_id for group in GROUPS])
+        self.assertEqual(sender.sent[0][1:], sender.sent[1][1:])
+        run = self.campaigns.run_for_clock(DAY, campaign_id, "10:00")
+        self.assertEqual(run.status, "sent")
+        self.assertEqual(self._fixed(sender, now + timedelta(minutes=5)), "idle")
+        self.assertEqual(len(sender.sent), 2)
+
+    def test_fixed_campaign_waits_for_its_clock(self) -> None:
+        self._campaign("A", fixed_clock="10:00")
+        sender = _Sender()
+        self.assertEqual(self._fixed(sender, _at(9, 59)), "idle")
+        self.assertEqual(sender.sent, [])
+
+    def test_fixed_campaign_is_skipped_after_the_grace_window(self) -> None:
+        campaign_id = self._campaign("A", fixed_clock="10:00")
+        sender = _Sender()
+        self.assertEqual(self._fixed(sender, _at(11, 0)), "idle")
+        self.assertEqual(sender.sent, [])
+        self.assertEqual(self.campaigns.run_for_clock(DAY, campaign_id, "10:00").status, "skipped")
+
+    def test_fixed_campaign_respects_validity(self) -> None:
+        self._campaign("A", fixed_clock="10:00", valid_until="2026-11-02")
+        sender = _Sender()
+        self.assertEqual(self._fixed(sender, _at(10, 5)), "idle")
+        self.assertEqual(sender.sent, [])
+
+    def test_rotating_campaign_is_not_sent_by_the_fixed_step(self) -> None:
+        self._campaign("A")
+        sender = _Sender()
+        self.assertEqual(self._fixed(sender, _at(10, 5)), "idle")
+        self.assertEqual(sender.sent, [])
+
+    def test_sending_off_does_nothing(self) -> None:
+        self._campaign("A", fixed_clock="10:00")
+        self.board.set_sending(False)
+        self.assertEqual(self._fixed(_Sender(), _at(10, 5)), "off")
+
+    def test_disconnected_session_keeps_the_fixed_campaign_pending(self) -> None:
+        campaign_id = self._campaign("A", fixed_clock="10:00")
+        self.assertEqual(self._fixed(_Sender(state="disconnected"), _at(10, 5)), "disconnected")
+        self.assertEqual(self.campaigns.run_for_clock(DAY, campaign_id, "10:00").status, "pending")
+
+    def test_fixed_and_queue_same_clock_both_allowed(self) -> None:
+        self._campaign("A", fixed_clock="10:00")
+        book = BoardBook("Livro", "", 1000, 2000, 50, "Menor preço.", "https://example", "")
+        post_id = self.board.add_post(day=DAY, clock="10:00", caption="*Livro*", image_path="data/cards/1.jpg", books=[book])
+        sender = _Sender()
+        self.assertEqual(self._fixed(sender, _at(10, 0)), "sent")
+        self.assertEqual(len(sender.sent), 1)
+        self.assertTrue(self.board.has_pending_posts(DAY, "22:00"))
+        self.board.mark_sent(post_id)
+
+    def test_two_fixed_campaigns_on_the_same_clock_go_one_after_the_other(self) -> None:
+        self._campaign("A", fixed_clock="10:00")
+        self._campaign("B", fixed_clock="10:00")
+        sender = _Sender()
+        now = _at(10, 0)
+        results = [self._fixed(sender, now + timedelta(seconds=45 * step)) for step in range(5)]
+        self.assertEqual(results, ["sent", "sent", "sent", "sent", "idle"])
+        self.assertEqual(
+            [caption for _chat, caption, _image in sender.sent],
+            ["Entre no A!", "Entre no A!", "Entre no B!", "Entre no B!"],
+        )
+
+    def test_last_invite_ignores_fixed_campaigns(self) -> None:
+        self._campaign("Fixa", fixed_clock="10:00")
+        self._campaign("Rotativa")
+        sender = _Sender()
+        self.assertEqual(self._last(sender, _at(22, 10)), "sent")
+        self.assertEqual(sender.sent[0][1], "Entre no Rotativa!")
+
+    def test_last_invite_is_skipped_when_only_fixed_campaigns_exist(self) -> None:
+        self._campaign("Fixa", fixed_clock="10:00")
+        sender = _Sender()
+        self.assertEqual(self._last(sender, _at(22, 10)), "skipped")
+        self.assertEqual(sender.sent, [])
+
+    def test_last_invite_rotation_ignores_fixed_runs(self) -> None:
+        self._campaign("Fixa", fixed_clock="10:00")
+        self._campaign("R1")
+        self._campaign("R2")
+        sender = _Sender()
+        for step in range(3):
+            self._fixed(sender, _at(10, 0) + timedelta(seconds=45 * step))
+        self._last(sender, _at(22, 10))
+        self._last(sender, _at(22, 11))
+        self.assertEqual(
+            [caption for _chat, caption, _image in sender.sent][2:],
+            ["Entre no R1!", "Entre no R1!"],
+        )
+        self.assertEqual(self._last(sender, _at(22, 10, day=4)), "sent")
+        self.assertEqual(sender.sent[-1][1], "Entre no R2!")
+
+    def test_last_invite_does_not_take_over_a_fixed_run_in_progress(self) -> None:
+        self._campaign("Fixa", fixed_clock="10:00")
+        self._campaign("R1")
+        sender = _Sender()
+        self.assertEqual(self._fixed(sender, _at(10, 0)), "sent")
+        self.assertEqual(self._last(sender, _at(22, 10)), "idle")
+        self.assertEqual(len(sender.sent), 1)
 
 
 if __name__ == "__main__":

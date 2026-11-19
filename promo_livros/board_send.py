@@ -2,14 +2,20 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
-from typing import Protocol
+from random import Random
+from typing import TYPE_CHECKING, Protocol
 
-from promo_livros.board_store import BoardStore
+from promo_livros import campaign_images
+from promo_livros.board_store import POST_KIND_CAMPAIGN, BoardPost, BoardStore
 from promo_livros.models import AppConfig
 from promo_livros.send_gap import gap_open, latest_stamp
 from promo_livros.waha import WahaError
+
+if TYPE_CHECKING:
+    from promo_livros.campaign_store import CampaignStore
 
 logger = logging.getLogger("promo_livros.board_send")
 
@@ -30,6 +36,8 @@ def publish_due(
     root: Path,
     now: datetime,
     quiet_since: str | None = None,
+    campaigns: CampaignStore | None = None,
+    rng: Random | None = None,
 ) -> str:
     """Manda o próximo post vencido para um grupo. O intervalo entre grupos segura o seguinte."""
     if not store.sending_enabled():
@@ -42,11 +50,28 @@ def publish_due(
     post = store.next_due_post(day, _clock(now), store.send_end_for(day, schedule.end))
     if post is None:
         return "idle"
+    is_campaign = post.post_kind == POST_KIND_CAMPAIGN
+    if is_campaign and (post.campaign_id is None or not post.image_path):
+        # Post de campanha sem conteúdo nunca vai ter o que enviar; sair da fila evita travar os seguintes.
+        store.skip(post.day, post.id)
+        logger.warning("Post de campanha das %s está sem campanha ou imagem. Foi pulado.", post.clock)
+        return "skipped"
     if sender.connection_state() != "connected":
         return "disconnected"
-    image = card_bytes(root, post.image_path)
+    if is_campaign:
+        replacement = _campaign_image_or_repick(store, campaigns, post, root, rng or Random())
+        if replacement is None:
+            # Foto e campanha podem ser apagadas no painel sem olhar a fila; travar aqui segura o dia todo.
+            store.skip(post.day, post.id)
+            logger.warning(
+                "O post de campanha das %s ficou sem foto legível. Foi pulado para não travar a fila.", post.clock
+            )
+            return "skipped"
+        post, image = replacement
+    else:
+        image = card_bytes(root, post.image_path)
     if image is None:
-        logger.error("O card do post das %s não está em data/cards. Nada foi enviado.", post.clock)
+        logger.error("A imagem do post das %s não está em data/cards. Nada foi enviado.", post.clock)
         return "broken"
     done = store.sent_group_ids(post.id)
     pending = [group for group in groups if group.chat_id not in done]
@@ -76,6 +101,44 @@ def publish_due(
         store.mark_sent(post.id)
         logger.info("Post das %s saiu para os %s grupos.", post.clock, len(groups))
     return "sent"
+
+
+def _read_campaign_image(root: Path, path: str) -> bytes | None:
+    try:
+        return campaign_images.read_image(root, path)
+    except OSError as exc:
+        logger.warning("Não deu para ler a foto %s da campanha: %s", path, type(exc).__name__)
+        return None
+
+
+def _campaign_image_or_repick(
+    store: BoardStore,
+    campaigns: CampaignStore | None,
+    post: BoardPost,
+    root: Path,
+    rng: Random,
+) -> tuple[BoardPost, bytes] | None:
+    """Foto do post de campanha. Sumiu: sorteia outra da mesma campanha e atualiza o post.
+
+    None quando a campanha não tem mais foto legível; quem chama pula o post.
+    """
+    image = _read_campaign_image(root, post.image_path)
+    if image is not None:
+        return post, image
+    if campaigns is None or post.campaign_id is None:
+        return None
+    candidates = [item for item in campaigns.images(post.campaign_id) if item.id != post.image_id]
+    while candidates:
+        chosen = candidates.pop(rng.randrange(len(candidates)))
+        data = _read_campaign_image(root, chosen.path)
+        if data is None:
+            continue
+        store.set_campaign_content(
+            post.id, post.campaign_id, chosen.id, post.text_id, post.caption, chosen.path, post.campaign_locked_at
+        )
+        logger.warning("A foto do post de campanha das %s sumiu. Foi trocada por outra da campanha.", post.clock)
+        return replace(post, image_id=chosen.id, image_path=chosen.path), data
+    return None
 
 
 def _caption_for_send(store: BoardStore, post, *, already_sent: bool) -> str:

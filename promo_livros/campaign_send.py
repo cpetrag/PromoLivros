@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from collections.abc import Sequence
 from enum import Enum
 from pathlib import Path
 from random import Random
@@ -12,11 +13,11 @@ from promo_livros.board_send import CardSender
 from promo_livros.board_store import BoardStore
 from promo_livros.campaign_images import read_image
 from promo_livros.campaign_rules import (
-    INVITE_FIXED,
-    INVITE_KINDS,
+    INVITE_LAST,
     InviteSettings,
     RotationEntry,
     fixed_invite_due,
+    fixed_invite_missed,
     invite_settings,
     last_invite_clock,
     last_invite_due,
@@ -24,11 +25,14 @@ from promo_livros.campaign_rules import (
     rotation_order,
 )
 from promo_livros.campaign_store import CampaignImage, CampaignRun, CampaignStore
-from promo_livros.models import AppConfig
+from promo_livros.models import AppConfig, WhatsAppGroup
 from promo_livros.send_gap import gap_open, latest_stamp
 from promo_livros.waha import WahaError
 
 logger = logging.getLogger("promo_livros.campaign_send")
+
+# Convite de uma campanha com horário fixo. O 'fixed' global antigo não é mais enviado.
+CLOCK_KIND = "clock"
 
 
 @dataclass(frozen=True)
@@ -71,7 +75,7 @@ def publish_due_invite(
     quiet_since: str | None = None,
     rng: Random | None = None,
 ) -> str:
-    """Manda o convite vencido para o próximo grupo, com a mesma espera da fila."""
+    """Manda o convite final (só campanhas rotativas) para o próximo grupo, com a mesma espera da fila."""
     if not board.sending_enabled():
         return "off"
     groups = config.whatsapp_groups
@@ -80,6 +84,48 @@ def publish_due_invite(
     run = _due_run(board, campaigns, now)
     if run is None:
         return "idle"
+    return _send_to_next_group(
+        board, campaigns, sender, run, groups, root=root, now=now, quiet_since=quiet_since, rng=rng
+    )
+
+
+def publish_due_fixed_campaigns(
+    config: AppConfig,
+    board: BoardStore,
+    campaigns: CampaignStore,
+    sender: CardSender,
+    *,
+    root: Path,
+    now: datetime,
+    quiet_since: str | None = None,
+    rng: Random | None = None,
+) -> str:
+    """Manda as campanhas de horário fixo na hora delas, sem depender da fila de livros."""
+    if not board.sending_enabled():
+        return "off"
+    groups = config.whatsapp_groups
+    if not groups:
+        return "no_groups"
+    run = _due_fixed_run(campaigns, now)
+    if run is None:
+        return "idle"
+    return _send_to_next_group(
+        board, campaigns, sender, run, groups, root=root, now=now, quiet_since=quiet_since, rng=rng
+    )
+
+
+def _send_to_next_group(
+    board: BoardStore,
+    campaigns: CampaignStore,
+    sender: CardSender,
+    run: CampaignRun,
+    groups: Sequence[WhatsAppGroup],
+    *,
+    root: Path,
+    now: datetime,
+    quiet_since: str | None,
+    rng: Random | None,
+) -> str:
     if sender.connection_state() != "connected":
         return "disconnected"
     stamp = now.isoformat(timespec="seconds")
@@ -144,9 +190,8 @@ def _close_without_content(campaigns: CampaignStore, run: CampaignRun, stamp: st
     return "skipped"
 
 
-def _due_run(board: BoardStore, campaigns: CampaignStore, now: datetime) -> CampaignRun | None:
+def _open_run(campaigns: CampaignStore, now: datetime) -> CampaignRun | None:
     """Convite começado hoje ou ontem vem antes, fora da janela, para terminar os grupos que faltam."""
-    day = now.date().isoformat()
     oldest_resumable = (now.date() - timedelta(days=1)).isoformat()
     while (started := campaigns.open_sending_run()) is not None:
         if started.day >= oldest_resumable:
@@ -154,18 +199,46 @@ def _due_run(board: BoardStore, campaigns: CampaignStore, now: datetime) -> Camp
         # Convite parado há dias não pode segurar os de hoje para sempre.
         campaigns.mark_run_sent(started.id, now.isoformat(timespec="seconds"))
         logger.warning("Convite %s de %s ficou parado no meio e foi encerrado.", started.kind, started.day)
-    now_clock = f"{now.hour:02d}:{now.minute:02d}"
-    settings = read_invite_settings(board)
-    for kind in INVITE_KINDS:
-        run = campaigns.run_for(day, kind)
-        if run.status == "pending" and _is_due(kind, board, day, now_clock, settings):
-            return run
     return None
 
 
-def _is_due(kind: str, board: BoardStore, day: str, now_clock: str, settings: InviteSettings) -> bool:
-    if kind == INVITE_FIXED:
-        return fixed_invite_due(settings.fixed_clock, now_clock)
+def _due_run(board: BoardStore, campaigns: CampaignStore, now: datetime) -> CampaignRun | None:
+    """Convite final vencido. Campanha fixa em andamento é terminada pelo passo das fixas."""
+    started = _open_run(campaigns, now)
+    if started is not None:
+        return None if started.kind == CLOCK_KIND else started
+    day = now.date().isoformat()
+    now_clock = f"{now.hour:02d}:{now.minute:02d}"
+    run = campaigns.run_for(day, INVITE_LAST)
+    if run.status == "pending" and _last_is_due(board, day, now_clock, read_invite_settings(board)):
+        return run
+    return None
+
+
+def _due_fixed_run(campaigns: CampaignStore, now: datetime) -> CampaignRun | None:
+    """Fixa em andamento, ou a primeira cuja hora chegou. Passou da tolerância sem sair, é pulada."""
+    started = _open_run(campaigns, now)
+    if started is not None:
+        return started if started.kind == CLOCK_KIND else None
+    day = now.date().isoformat()
+    now_clock = f"{now.hour:02d}:{now.minute:02d}"
+    for campaign in campaigns.ready_fixed(day):
+        clock = campaign.fixed_clock
+        if clock is None:
+            continue
+        if fixed_invite_due(clock, now_clock):
+            run = campaigns.run_for_clock(day, campaign.id, clock)
+            if run.status == "pending":
+                return run
+        elif fixed_invite_missed(clock, now_clock):
+            run = campaigns.run_for_clock(day, campaign.id, clock)
+            if run.status == "pending":
+                campaigns.skip_run(run.id)
+                logger.warning("Campanha %s das %s pulada: passou da tolerância sem sair.", campaign.name, clock)
+    return None
+
+
+def _last_is_due(board: BoardStore, day: str, now_clock: str, settings: InviteSettings) -> bool:
     end = _send_end(board, day)
     return last_invite_due(
         now_clock,
@@ -230,10 +303,14 @@ def _stored_content(campaigns: CampaignStore, root: Path, run: CampaignRun) -> _
 
 
 def _candidates(campaigns: CampaignStore, run: CampaignRun) -> list[int]:
-    ready = campaigns.ready_campaigns()
+    if run.kind == CLOCK_KIND:
+        # Campanha fixa só manda o próprio conteúdo, nunca entra no rodízio.
+        ready_ids = {item.id for item in campaigns.ready_fixed(run.day)}
+        return [run.campaign_id] if run.campaign_id in ready_ids else []
+    ready = campaigns.ready_rotating(run.day)
     order = rotation_order(
         [RotationEntry(item.id, item.position) for item in ready],
-        campaigns.last_used_campaign(),
+        campaigns.last_used_rotating(),
     )
     preferred = run.campaign_id if run.status == "sending" or run.manual else None
     if preferred in order:

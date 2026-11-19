@@ -41,6 +41,83 @@ def _download(_url: str) -> Image.Image:
 
 
 class FilaCsvTests(unittest.TestCase):
+    def test_campanha_row_parses_without_books(self) -> None:
+        # Colunas de livro vêm preenchidas de propósito: na linha campanha elas são ignoradas.
+        text = f"{_HEADER}\n10:00;Campanha;lixo;R$ abc;;;;MLB1;x;y;;;;nao-e-link\n"
+        rows = parse_fila_csv(text)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["clock"], "10:00")
+        self.assertTrue(rows[0]["is_campaign"])
+        self.assertIsNone(rows[0]["amazon"])
+        self.assertIsNone(rows[0]["ml"])
+        self.assertEqual(rows.avisos, [])
+        self.assertEqual(rows.rejeitados, [])
+
+    def test_book_and_campanha_in_same_csv(self) -> None:
+        text = f"{_FILA}12:00;CAMPANHA;;;;;;;;;;;;\n"
+        rows = parse_fila_csv(text)
+        by_clock = {item["clock"]: item for item in rows}
+        self.assertFalse(by_clock["10:15"].get("is_campaign", False))
+        self.assertTrue(by_clock["12:00"]["is_campaign"])
+        self.assertEqual(by_clock["10:15"]["amazon"]["asin"], "B000000001")
+
+    def test_campanha_sem_horario_e_horario_repetido_sao_recusados(self) -> None:
+        with self.assertRaises(CatalogError) as sem_hora:
+            parse_fila_csv(f"{_HEADER}\n;campanha;;;;;;;;;;;;\n")
+        self.assertIn("horário", str(sem_hora.exception))
+        with self.assertRaises(CatalogError) as repetido:
+            parse_fila_csv(f"{_HEADER}\n10:00;campanha;;;;;;;;;;;;\n10:00;campanha;;;;;;;;;;;;\n")
+        self.assertIn("aparece de novo", str(repetido.exception))
+
+    def test_previa_campanha_sem_passos_de_keepa_ou_resenha(self) -> None:
+        text = f"{_HEADER}\n10:15;campanha;;;;;;;;;;;;\n11:00;B000000002;Cute Bears;R$ 5,00;;sim;;;;;;;;\n"
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            catalog = CatalogStore(root / "board.sqlite")
+            board = BoardStore(root / "board.sqlite")
+            try:
+                payload = previa_do_csv(catalog, board, "2026-10-03", "09:00", "22:00", text, MemoriaPrevia())
+                campanha, livro = payload["slots"]
+                self.assertTrue(campanha["is_campaign"])
+                self.assertEqual(campanha["label"], "Campanha (rodízio)")
+                self.assertIsNone(campanha["amazon"])
+                self.assertFalse(livro["is_campaign"])
+                self.assertTrue(payload["slots_ids"][0]["is_campaign"])
+                self.assertEqual([b["asin"] for b in payload["livros"]], ["B000000002"])
+                self.assertTrue(all(step["asin"] in {"B000000002", ""} for step in payload["passos"]))
+                self.assertEqual(payload["passos"][-1]["kind"], "gravar")
+            finally:
+                catalog.close()
+                board.close()
+
+    def test_so_campanha_gera_previa_e_sobrevive_ao_gravar(self) -> None:
+        from promo_livros.fila_csv import ImportacaoFila, avancar
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            catalog = CatalogStore(root / "board.sqlite")
+            board = BoardStore(root / "board.sqlite")
+            try:
+                payload = previa_do_csv(
+                    catalog, board, "2026-10-03", "09:00", "22:00",
+                    f"{_HEADER}\n10:15;campanha;;;;;;;;;;;;\n", MemoriaPrevia(),
+                )
+                job = ImportacaoFila(payload)
+                gravados = []
+                while not job.done and not job.error:
+                    avancar(
+                        job,
+                        resolve_amazon=lambda urls: urls,
+                        resolve_ml=lambda urls: urls,
+                        describe=lambda title, author="": "x",
+                        gravar=lambda atual: gravados.append(atual) or "ok",
+                    )
+                self.assertEqual(len(gravados), 1)
+                self.assertTrue(gravados[0].slots_ids[0]["is_campaign"])
+            finally:
+                catalog.close()
+                board.close()
+
     def test_colunas_ml_com_link_magalu_vai_para_store_magalu(self) -> None:
         text = (
             f"{_HEADER}\n"

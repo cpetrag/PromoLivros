@@ -45,6 +45,22 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _CAMPAIGN_ID = r"([0-9]{1,12})"
 
 
+def resolve_post_image_file(raw_path: str, cards_root: Path, project_root: Path) -> Path | None:
+    """Arquivo da miniatura de um post. Só serve data/cards/ ou data/campaigns/{id}/*.jpg.
+
+    A confinação evita que um caminho gravado no banco leve a leitura para fora dessas pastas.
+    """
+    from promo_livros.campaign_images import image_file
+
+    path = Path(raw_path)
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    resolved = path.resolve()
+    if resolved.parent == cards_root.resolve() and resolved.is_file():
+        return resolved
+    return image_file(project_root, raw_path)
+
+
 @dataclass
 class DashboardApp:
     username: str
@@ -218,6 +234,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     repeat_days=ctx["repeat_days"],
                     arquivo=ctx.get("arquivo"),
                     invites=ctx["invites"],
+                    campaign_forms=ctx["campaign_forms"],
                 ))
                 return
             self._html(render_board(
@@ -235,6 +252,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 repeat_days=ctx["repeat_days"],
                 arquivo=ctx.get("arquivo"),
                 invites=ctx["invites"],
+                campaign_forms=ctx["campaign_forms"],
             ))
             return
         error, view = self.app.today()
@@ -296,8 +314,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if path == "/campanhas/acao":
                 self._redirect(self.app.campaigns["action"](form), self._token())
                 return
-            if path == "/hoje/convite":
-                self.app.campaigns["choose"](form)
+            if path == "/campanhas/gerar":
+                self._redirect(self.app.campaigns["generate"](form), self._token())
+                return
+            if path in {"/hoje/convite", "/hoje/campanha-post"}:
+                action = "choose" if path == "/hoje/convite" else "swap_post"
+                self.app.campaigns[action](form)
                 self._redirect("/hoje", self._token())
                 return
         if path == "/logout":
@@ -723,6 +745,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "repeat_days": extra.get("repeat_days") or 1,
             "arquivo": extra.get("arquivo"),
             "invites": extra.get("invites") or "",
+            "campaign_forms": extra.get("campaign_forms") or {},
         }
 
     def _extensao(self, path: str) -> None:
@@ -1178,8 +1201,19 @@ def build_app(config, username: str, password: str) -> DashboardApp:
                 "repeat_days": board_store.repeat_days(),
                 "arquivo": board_store.sent_feed(),
                 "invites": invites_html(),
+                "campaign_forms": campaign_forms(),
             },
         )
+
+    def campaign_forms() -> dict[int, str]:
+        try:
+            return campaign_panel["post_forms"]()
+        except Exception as exc:
+            # Sem o seletor a linha do post continua útil: um erro aqui não pode derrubar a /hoje.
+            logging.getLogger("promo_livros").error(
+                "Não consegui montar os seletores de campanha da /hoje: %s", type(exc).__name__
+            )
+            return {}
 
     def invites_html() -> str:
         try:
@@ -1443,6 +1477,13 @@ def build_app(config, username: str, password: str) -> DashboardApp:
     )
 
     catalog = CatalogStore(config.sqlite_path)
+    from promo_livros.campaign_queue import CampaignQueueContext
+    from promo_livros.campaign_store import CampaignStore
+
+    campaign_store = CampaignStore(config.sqlite_path)
+    campaign_queue = CampaignQueueContext(
+        campaign_store, now=lambda: datetime.now(zone(config.schedule.timezone))
+    )
     from promo_livros.fila_aplicar import MemoriaPrevia
 
     previas = MemoriaPrevia()
@@ -1735,6 +1776,7 @@ def build_app(config, username: str, password: str) -> DashboardApp:
                     cookie=session_from_export(board_store.setting("ml_cookies") or "")[0],
                 ),
                 describe=describe,
+                campaign_context=campaign_queue,
             )
 
         return avancar(
@@ -1850,6 +1892,7 @@ def build_app(config, username: str, password: str) -> DashboardApp:
                     cookie=session_from_export(board_store.setting("ml_cookies") or "")[0],
                 ),
                 describe=book_line,
+                campaign_context=campaign_queue,
             )
         except CatalogError as exc:
             holder["curation_notice"] = str(exc)
@@ -2129,14 +2172,7 @@ def build_app(config, username: str, password: str) -> DashboardApp:
         raw = board_store.image_path_for(post_id)
         if not raw:
             return None
-        path = Path(raw)
-        if not path.is_absolute():
-            path = Path.cwd() / path
-        resolved = path.resolve()
-        cards = (Path.cwd() / cards_dir).resolve()
-        if resolved.parent != cards or not resolved.is_file():
-            return None
-        return resolved
+        return resolve_post_image_file(raw, Path.cwd() / cards_dir, PROJECT_ROOT)
 
     review_cache = BlurbCache(Path("data") / "blurb_cache.json")
     review_writer = (
@@ -2187,23 +2223,31 @@ def build_app(config, username: str, password: str) -> DashboardApp:
 
     polls = poll_callbacks(config, PollStore(config.sqlite_path))
     from promo_livros.campaign_panel import campaign_callbacks
-    from promo_livros.campaign_store import CampaignStore
 
     campaign_panel = campaign_callbacks(
         config,
         board_store,
-        CampaignStore(config.sqlite_path),
+        campaign_store,
         root=PROJECT_ROOT,
         current_day=current_day,
         now=lambda: datetime.now(zone(config.schedule.timezone)),
     )
 
-    def choose_invite(form: dict[str, list[str]]) -> str:
-        notice = campaign_panel["choose"](form)
-        holder["notice"] = notice
-        return notice
+    def with_board_notice(action: Callable[[dict[str, list[str]]], str]) -> Callable[[dict[str, list[str]]], str]:
+        """Ações da /hoje devolvem a mensagem; ela precisa aparecer no aviso da própria /hoje."""
 
-    campaign_routes: CampaignCallbacks = {**campaign_panel, "choose": choose_invite}
+        def run(form: dict[str, list[str]]) -> str:
+            notice = action(form)
+            holder["notice"] = notice
+            return notice
+
+        return run
+
+    campaign_routes: CampaignCallbacks = {
+        **campaign_panel,
+        "choose": with_board_notice(campaign_panel["choose"]),
+        "swap_post": with_board_notice(campaign_panel["swap_post"]),
+    }
     started = _sync_catalogs()
     if started:
         holder["curation_notice"] = " ".join(started)

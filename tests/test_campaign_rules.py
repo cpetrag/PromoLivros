@@ -5,16 +5,45 @@ from promo_livros.campaign_rules import (
     DEFAULT_LAST_OFFSET_MINUTES,
     InviteSettings,
     RotationEntry,
+    campaign_valid_on,
     fixed_invite_due,
     fixed_invite_missed,
     invite_settings,
+    is_rotating,
     last_invite_clock,
     last_invite_due,
+    parse_campaign_clock,
     parse_fixed_clock,
     parse_last_offset,
+    parse_valid_until,
     pick_avoiding,
     rotation_order,
 )
+
+
+class CampaignModeTests(unittest.TestCase):
+    def test_empty_clock_means_rotating(self) -> None:
+        self.assertIsNone(parse_campaign_clock("  "))
+        self.assertTrue(is_rotating(None))
+        self.assertFalse(is_rotating("10:00"))
+
+    def test_campaign_clock_allows_queue_overlap(self) -> None:
+        self.assertEqual(parse_campaign_clock(" 10:00 "), "10:00")
+
+    def test_bad_campaign_clock_is_refused(self) -> None:
+        with self.assertRaises(ValueError):
+            parse_campaign_clock("25:00")
+
+    def test_valid_until_empty_or_iso(self) -> None:
+        self.assertIsNone(parse_valid_until(""))
+        self.assertEqual(parse_valid_until("2026-12-01"), "2026-12-01")
+        with self.assertRaises(ValueError):
+            parse_valid_until("01/12/2026")
+
+    def test_validity_includes_the_end_day(self) -> None:
+        self.assertTrue(campaign_valid_on(None, "2026-11-19"))
+        self.assertTrue(campaign_valid_on("2026-11-19", "2026-11-19"))
+        self.assertFalse(campaign_valid_on("2026-11-18", "2026-11-19"))
 
 
 class FixedClockTests(unittest.TestCase):

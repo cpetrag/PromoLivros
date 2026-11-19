@@ -2,11 +2,13 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
+from random import Random
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from promo_livros.board_send import publish_due
 from promo_livros.board_store import BoardBook, BoardStore
+from promo_livros.campaign_store import CampaignStore
 from promo_livros.models import WhatsAppGroup
 from promo_livros.send_schedule import parse_schedule
 from promo_livros.waha import WahaError
@@ -167,6 +169,128 @@ class BoardSendTests(unittest.TestCase):
             self.assertEqual(_publish(root, store, sender, now), "broken")
             self.assertEqual(sender.sent, [])
             store.close()
+
+    def test_campaign_post_sends_campaign_image(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            store = _store(root)
+            campaign_dir = root / "data" / "campaigns" / "1"
+            campaign_dir.mkdir(parents=True)
+            (campaign_dir / "a.jpg").write_bytes(b"campaign-jpeg")
+            for post in store.posts_for("2026-09-28"):
+                store.cancel("2026-09-28", post.id)
+            store.add_campaign_post(
+                "2026-09-28",
+                "10:00",
+                campaign_id=1,
+                image_id=1,
+                text_id=1,
+                caption="Oferta da campanha",
+                image_path="data/campaigns/1/a.jpg",
+            )
+            sender = _Sender()
+            now = datetime(2026, 9, 28, 10, 0, tzinfo=ZONE)
+
+            self.assertEqual(_publish(root, store, sender, now), "sent")
+            self.assertEqual(sender.sent[0][1], b"campaign-jpeg")
+            self.assertEqual(sender.captions[0], "Oferta da campanha")
+            store.close()
+
+    def test_empty_campaign_post_is_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            store = _store(root)
+            for post in store.posts_for("2026-09-28"):
+                store.cancel("2026-09-28", post.id)
+            post_id = store.add_campaign_post("2026-09-28", "10:00")
+            sender = _Sender()
+            now = datetime(2026, 9, 28, 10, 0, tzinfo=ZONE)
+
+            self.assertEqual(_publish(root, store, sender, now), "skipped")
+            self.assertEqual(sender.sent, [])
+            self.assertNotIn(post_id, [post.id for post in store.posts_for("2026-09-28")])
+            self.assertEqual(_publish(root, store, sender, now), "idle")
+            store.close()
+
+
+class MissingCampaignPhotoTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self._folder.cleanup)
+        self.root = Path(self._folder.name)
+        self.store = _store(self.root)
+        self.campaigns = CampaignStore(self.root / "board.sqlite")
+        self.addCleanup(self.store.close)
+        self.addCleanup(self.campaigns.close)
+        for post in self.store.posts_for("2026-09-28"):
+            self.store.cancel("2026-09-28", post.id)
+        self.campaign_id = self.campaigns.create("Campanha")
+        self.text_id = self.campaigns.add_text(self.campaign_id, "Entre no grupo")
+        self.now = datetime(2026, 9, 28, 10, 0, tzinfo=ZONE)
+
+    def _photo(self, name: str, *, on_disk: bool) -> tuple[int, str]:
+        relative = f"data/campaigns/{self.campaign_id}/{name}.jpg"
+        image_id = self.campaigns.add_image(self.campaign_id, relative)
+        if on_disk:
+            path = self.root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(f"jpeg-{name}".encode())
+        return image_id, relative
+
+    def _campaign_post(self, image_id: int, relative: str, clock: str = "10:00") -> int:
+        return self.store.add_campaign_post(
+            "2026-09-28",
+            clock,
+            campaign_id=self.campaign_id,
+            image_id=image_id,
+            text_id=self.text_id,
+            caption="Convite",
+            image_path=relative,
+            locked_at="2026-09-28T08:00:00-03:00",
+        )
+
+    def _publish(self, now: datetime) -> str:
+        config = SimpleNamespace(whatsapp_groups=GROUPS)
+        return publish_due(
+            config, self.store, _Sender(), root=self.root, now=now, campaigns=self.campaigns, rng=Random(1)
+        )
+
+    def test_missing_photo_is_replaced_by_another_from_the_same_campaign(self) -> None:
+        missing_id, missing_path = self._photo("gone", on_disk=False)
+        spare_id, spare_path = self._photo("spare", on_disk=True)
+        post_id = self._campaign_post(missing_id, missing_path)
+        sender = _Sender()
+        config = SimpleNamespace(whatsapp_groups=GROUPS)
+
+        result = publish_due(
+            config, self.store, sender, root=self.root, now=self.now, campaigns=self.campaigns, rng=Random(1)
+        )
+
+        self.assertEqual(result, "sent")
+        self.assertEqual(sender.sent[0][1], b"jpeg-spare")
+        updated = next(post for post in self.store.posts_for("2026-09-28") if post.id == post_id)
+        self.assertEqual((updated.image_id, updated.image_path), (spare_id, spare_path))
+        self.assertEqual(updated.campaign_locked_at, "2026-09-28T08:00:00-03:00")
+
+    def test_without_any_readable_photo_the_post_is_skipped_and_the_next_one_goes(self) -> None:
+        missing_id, missing_path = self._photo("gone", on_disk=False)
+        broken_id = self._campaign_post(missing_id, missing_path, "10:00")
+        self.store.add_post(
+            day="2026-09-28", clock="10:30", caption="*Livro*", image_path="data/cards/1.jpg", books=[_book()]
+        )
+
+        self.assertEqual(self._publish(self.now), "skipped")
+        self.assertNotIn(broken_id, [post.id for post in self.store.posts_for("2026-09-28")])
+        self.assertEqual(self._publish(self.now + timedelta(minutes=30)), "sent")
+
+    def test_without_campaign_store_the_missing_photo_post_is_still_skipped(self) -> None:
+        missing_id, missing_path = self._photo("gone", on_disk=False)
+        self._campaign_post(missing_id, missing_path)
+        config = SimpleNamespace(whatsapp_groups=GROUPS)
+
+        result = publish_due(config, self.store, _Sender(), root=self.root, now=self.now)
+
+        self.assertEqual(result, "skipped")
 
 
 def _publish(

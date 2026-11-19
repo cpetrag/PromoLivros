@@ -17,6 +17,8 @@ from promo_livros.ml_links import clean_product_url
 from promo_livros.shopee_links import SHOPEE_ID, is_shopee_url
 
 _MAX_LINHAS = 60
+# Valor da coluna asin que reserva o horário para o rodízio de campanhas (comparado sem acento/caixa).
+_CAMPANHA = "campanha"
 _COLUNAS = (
     "horario",
     "asin",
@@ -84,6 +86,13 @@ def parse_fila_csv(text: str) -> list[dict]:
     for index, raw in enumerate(reader, start=2):
         row = {_fold(key): (value or "").strip() for key, value in raw.items() if key}
         clock = row.get("horario") or ""
+        if _fold(row.get("asin") or "") == _CAMPANHA:
+            # Linha de campanha: o resto das colunas é ignorado, então nada de livro é validado.
+            if _horario_valido(clock, index, errors, clocks):
+                rows.append(_linha_campanha(index, clock))
+            if len(rows) > _MAX_LINHAS:
+                raise CatalogError(f"A fila aceita no máximo {_MAX_LINHAS} horários.")
+            continue
         amazon = _anuncio(row, "amazon", index, errors, avisos, rejeitados)
         segundo = _anuncio(row, "ml", index, errors, avisos, rejeitados)
         mercado = magalu = None
@@ -109,16 +118,8 @@ def parse_fila_csv(text: str) -> list[dict]:
             and not _ja_reclamou(errors, index)
         ):
             continue
-        if not clock:
-            errors.append(f"Linha {index}: falta o horário.")
+        if not _horario_valido(clock, index, errors, clocks):
             continue
-        if _CLOCK.fullmatch(clock) is None:
-            errors.append(f"Linha {index}: horário {clock} precisa ser HH:MM, como 08:00.")
-            continue
-        if clock in clocks:
-            errors.append(f"O horário {clock} aparece de novo na linha {index}.")
-        else:
-            clocks[clock] = index
         if _ja_reclamou(rejeitados, index):
             continue
         filled = [item for item in (amazon, mercado, magalu, shopee, extra) if item is not None]
@@ -146,6 +147,7 @@ def parse_fila_csv(text: str) -> list[dict]:
                 "magalu": magalu,
                 "shopee": shopee,
                 "extra": extra,
+                "is_campaign": False,
             }
         )
         if len(rows) > _MAX_LINHAS:
@@ -160,6 +162,34 @@ def parse_fila_csv(text: str) -> list[dict]:
         raise CatalogError("O CSV da fila não tem nenhum horário.")
     rows.sort(key=lambda item: item["clock"])
     return _Lidas(rows, avisos, rejeitados)
+
+
+def _horario_valido(clock: str, linha: int, errors: list[str], clocks: dict[str, int]) -> bool:
+    """Confere o HH:MM e registra o horário. Repetido vira erro, mas a linha continua sendo lida."""
+    if not clock:
+        errors.append(f"Linha {linha}: falta o horário.")
+        return False
+    if _CLOCK.fullmatch(clock) is None:
+        errors.append(f"Linha {linha}: horário {clock} precisa ser HH:MM, como 08:00.")
+        return False
+    if clock in clocks:
+        errors.append(f"O horário {clock} aparece de novo na linha {linha}.")
+    else:
+        clocks[clock] = linha
+    return True
+
+
+def _linha_campanha(linha: int, clock: str) -> dict:
+    return {
+        "linha": str(linha),
+        "clock": clock,
+        "amazon": None,
+        "ml": None,
+        "magalu": None,
+        "shopee": None,
+        "extra": None,
+        "is_campaign": True,
+    }
 
 
 def previa_do_csv(catalog, board, day: str, agora: str, fim: str, text: str, memoria) -> dict:
@@ -183,6 +213,9 @@ def previa_do_csv(catalog, board, day: str, agora: str, fim: str, text: str, mem
             continue
         if clock >= fim:
             errors.append(f"Linha {numero}: {clock} fica fora da janela, que termina às {fim}.")
+            continue
+        if linha.get("is_campaign"):
+            slots.append(SlotFila(clock, None, None, is_campaign=True))
             continue
         ofertas = []
         for bruto in (linha["amazon"], linha["ml"], linha.get("magalu"), linha["shopee"], linha.get("extra")):
@@ -408,9 +441,10 @@ def _tirar_ignorados(job: ImportacaoFila) -> None:
         shopee = "" if slot.get("shopee") in ids else slot.get("shopee") or ""
         magalu = "" if slot.get("magalu") in ids else slot.get("magalu") or ""
         extra = "" if slot.get("extra") in ids else slot.get("extra") or ""
-        if amazon or mercado or shopee or magalu or extra:
+        if amazon or mercado or shopee or magalu or extra or slot.get("is_campaign"):
             slots.append(
                 {
+                    "is_campaign": bool(slot.get("is_campaign")),
                     "clock": slot["clock"],
                     "amazon": amazon,
                     "ml": mercado,

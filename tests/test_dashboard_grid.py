@@ -34,6 +34,34 @@ class ListStoreLogosTests(unittest.TestCase):
         self.assertNotIn('src="/lojas/ml.png"', html)
         self.assertLess(html.index("/cards/7.jpg"), html.index("/lojas/amazon.png"))
 
+    def test_campaign_post_row_shows_swap_form_and_looks_distinct(self):
+        from promo_livros.board_store import POST_KIND_CAMPAIGN
+        from promo_livros.dashboard_belt import _row
+
+        post = FeedPost(
+            id=9, clock="11:00", status="scheduled", title="Entre no grupo", price_cents=0, discount_pct=None,
+            url="", sends=(), caption="Entre no grupo", post_kind=POST_KIND_CAMPAIGN, campaign_id=2, image_id=3, text_id=4,
+        )
+        form = '<form class="campaign-swap" method="post" action="/hoje/campanha-post"></form>'
+
+        html = _row(post, (), [9], campaign_form=form)
+
+        self.assertIn('action="/hoje/campanha-post"', html)
+        self.assertIn('data-kind="campaign"', html)
+        self.assertIn("post campaign", html)
+        self.assertIn("Campanha</span>", html)
+        self.assertNotIn("js-edit", html)
+        self.assertNotIn("/lojas/", html)
+
+    def test_book_post_row_has_no_campaign_form(self):
+        from promo_livros.dashboard_belt import _row
+
+        html = _row(_post(7, "13:40", shelf=(AMAZON,)), (), [7])
+
+        self.assertNotIn("/hoje/campanha-post", html)
+        self.assertIn('data-kind="book"', html)
+        self.assertIn("js-edit", html)
+
     def test_summary_counts_posts_still_to_go_per_store(self):
         from promo_livros.dashboard_belt import _stores_summary
 

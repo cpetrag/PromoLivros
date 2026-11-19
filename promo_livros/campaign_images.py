@@ -71,9 +71,17 @@ def save_upload(root: Path, campaign_id: int, payload: bytes) -> str:
     return f"data/campaigns/{int(campaign_id)}/{name}"
 
 
-def read_image(root: Path, relative_path: str) -> bytes | None:
+def image_file(root: Path, relative_path: str) -> Path | None:
+    """Caminho da foto se ela existe dentro de data/campaigns/{id}/, senão None."""
     resolved = _inside_campaigns(root, relative_path)
     if resolved is None or not resolved.is_file():
+        return None
+    return resolved
+
+
+def read_image(root: Path, relative_path: str) -> bytes | None:
+    resolved = image_file(root, relative_path)
+    if resolved is None:
         return None
     return resolved.read_bytes()
 

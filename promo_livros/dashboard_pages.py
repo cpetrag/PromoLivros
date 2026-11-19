@@ -143,8 +143,9 @@ def render_board(
     repeat_days: int = 1,
     arquivo: list | None = None,
     invites: str = "",
+    campaign_forms: dict[int, str] | None = None,
 ) -> str:
-    from promo_livros.campaign_pages import INVITE_STYLE
+    from promo_livros.campaign_pages import CAMPAIGN_POST_STYLE, INVITE_STYLE
     from promo_livros.dashboard_belt import BELT_CSS, BELT_JS, page_body
     from promo_livros.dashboard_grid import GRID_CSS, GRID_JS
 
@@ -163,13 +164,14 @@ def render_board(
         repeat_days=repeat_days,
         arquivo=arquivo,
         invites=invites,
+        campaign_forms=campaign_forms,
     )
     return _page(
         "Hoje",
         body,
         nav=False,
         body_class="belt-page",
-        extra_style=BELT_CSS + GRID_CSS + INVITE_STYLE,
+        extra_style=BELT_CSS + GRID_CSS + INVITE_STYLE + CAMPAIGN_POST_STYLE,
         extra_script=BELT_JS + GRID_JS,
     )
 

@@ -58,6 +58,7 @@ def fragments(
     repeat_days: int = 1,
     arquivo: list | None = None,
     invites: str = "",
+    campaign_forms: dict[int, str] | None = None,
 ) -> dict[str, str]:
     pieces = _pieces(
         day,
@@ -72,6 +73,7 @@ def fragments(
         members=members,
         repeat_days=repeat_days,
         arquivo=arquivo,
+        campaign_forms=campaign_forms,
     )
     return {**pieces, "invites": invites}
 
@@ -92,6 +94,7 @@ def page_body(
     repeat_days: int = 1,
     arquivo: list | None = None,
     invites: str = "",
+    campaign_forms: dict[int, str] | None = None,
 ) -> str:
     data = _pieces(
         day,
@@ -106,6 +109,7 @@ def page_body(
         members=members,
         repeat_days=repeat_days,
         arquivo=arquivo,
+        campaign_forms=campaign_forms,
     )
     alert = f'<p class="alert" role="alert">{escape(notice)}</p>' if notice else ""
     suggested = escape(_suggested(posts, schedule, now))
@@ -241,6 +245,7 @@ def _pieces(
     members=None,
     repeat_days: int = 1,
     arquivo: list | None = None,
+    campaign_forms: dict[int, str] | None = None,
 ) -> dict[str, str]:
     chosen = aba if aba in {key for key, _label in _ABAS} or aba == "descartadas" else "todas"
     now_clock = _clock_text(now)
@@ -252,7 +257,7 @@ def _pieces(
         "dayline": _dayline(posts, schedule, now_clock),
         "warn": _warn(posts, schedule, now_clock, whatsapp),
         "tabs": _tabs(posts, chosen, now_clock, arquivo),
-        "rows": _rows(visible, posts, chosen, groups, now_clock, whatsapp, arquivo),
+        "rows": _rows(visible, posts, chosen, groups, now_clock, whatsapp, arquivo, campaign_forms or {}),
         "hours": _hours(posts, schedule),
         "bands": _bands(posts),
         "members": _members(members),
@@ -479,7 +484,9 @@ def _rows(
     now_clock: str | None,
     whatsapp: str = "unknown",
     arquivo: list | None = None,
+    campaign_forms: dict[int, str] | None = None,
 ) -> str:
+    forms = campaign_forms or {}
     if chosen == "enviadas" and arquivo is not None:
         if not arquivo:
             return '<p class="empty-state">Nenhum post enviado ainda.</p>'
@@ -498,14 +505,14 @@ def _rows(
     blocks = []
     if chosen in {"todas", "fila"}:
         blocks.append(_stores_summary([post for post in posts if _aba_keeps("fila", post, now_clock)]))
-    blocks.extend(_row(post, groups, scheduled_ids, now_clock, whatsapp) for post in sent)
+    blocks.extend(_row(post, groups, scheduled_ids, now_clock, whatsapp, forms.get(post.id, "")) for post in sent)
     if sent and rest:
         stamp = f" {escape(now_clock)}" if now_clock else ""
         blocks.append(f'<div class="now-line" role="separator"><span>agora{stamp}</span></div>')
     blocks.append('<div id="queue">')
-    blocks.extend(_row(post, groups, scheduled_ids, now_clock, whatsapp) for post in scheduled)
+    blocks.extend(_row(post, groups, scheduled_ids, now_clock, whatsapp, forms.get(post.id, "")) for post in scheduled)
     blocks.append("</div>")
-    blocks.extend(_row(post, groups, scheduled_ids, now_clock, whatsapp) for post in others)
+    blocks.extend(_row(post, groups, scheduled_ids, now_clock, whatsapp, forms.get(post.id, "")) for post in others)
     return "".join(blocks)
 
 
@@ -515,10 +522,12 @@ def _row(
     scheduled_ids: list[int],
     now_clock: str | None = None,
     whatsapp: str = "unknown",
+    campaign_form: str = "",
 ) -> str:
+    is_campaign = getattr(post, "post_kind", "book") == "campaign"
     title = _star_title(post.caption, post.title)
     blurb = (post.blurb or _italic(post.caption)).strip()
-    synopsis = f'<p class="synopsis">{escape(blurb)}</p>' if blurb else ""
+    synopsis = f'<p class="synopsis">{escape(blurb)}</p>' if blurb and not is_campaign else ""
     price = format_brl(post.price_cents) if post.price_cents else ""
     chips = _price_chips(post)
     link = _link_row(post)
@@ -530,9 +539,15 @@ def _row(
             f'<div class="bubble">{_whatsapp_html(post.caption)}</div></details>'
         )
     dim = " sent" if post.status == "sent" else ""
+    kind_class = " campaign" if is_campaign else ""
     drag = ' draggable="false"'
+    # Post de campanha não tem livro: sem preço, link nem lojas, e a troca de foto/texto fica na própria linha.
+    campaign_tag = '<span class="chip campaign-tag">Campanha</span>' if is_campaign else ""
+    price_line = "" if is_campaign else f'<p class="price-line">{escape(price)} {chips}</p>'
+    link = "" if is_campaign else link
+    logos = "" if is_campaign else _store_logos(post)
     return f"""
-    <article class="post{dim}" data-id="{post.id}" data-status="{escape(post.status)}" data-title="{escape(title)}"{drag}>
+    <article class="post{dim}{kind_class}" data-id="{post.id}" data-status="{escape(post.status)}" data-kind="{"campaign" if is_campaign else "book"}" data-title="{escape(title)}"{drag}>
       <div class="when">
         {_grip(post)}
         <time>{escape(_when_label(post))}</time>
@@ -542,14 +557,15 @@ def _row(
         <button type="button" class="thumb-btn js-light" data-src="/cards/{post.id}.jpg" aria-label="Ampliar capa de {escape(title)}">
           <img class="thumb" alt="" width="64" height="90" src="/cards/{post.id}.jpg">
         </button>
-        {_store_logos(post)}
+        {logos}
       </div>
       <div class="copy">
         <h2>{escape(title)}</h2>
         {synopsis}
-        <p class="price-line">{escape(price)} {chips}</p>
+        {price_line}
         {link}
-        <div class="chips">{_send_chips(post, groups)}{extra}</div>
+        <div class="chips">{campaign_tag}{_send_chips(post, groups)}{extra}</div>
+        {campaign_form if is_campaign else ""}
         {message}
         <div class="actions">{_actions(post, scheduled_ids)}</div>
       </div>
@@ -577,6 +593,7 @@ def _store_logos(post) -> str:
 def _stores_summary(posts: list) -> str:
     """Quantos posts que ainda vão sair levam cada loja. Post com duas lojas conta nas duas."""
     counts: dict[str, int] = {}
+    posts = [post for post in posts if getattr(post, "post_kind", "book") != "campaign"]
     for post in posts:
         for store in _post_stores(post):
             counts[store] = counts.get(store, 0) + 1
@@ -618,7 +635,8 @@ def _actions(post, scheduled_ids: list[int]) -> str:
     index = scheduled_ids.index(post.id) if post.id in scheduled_ids else -1
     up_disabled = " disabled" if index <= 0 else ""
     down_disabled = " disabled" if index < 0 or index >= len(scheduled_ids) - 1 else ""
-    edit = (
+    # O editor da /hoje é de livro; o conteúdo de campanha se troca pelo seletor da própria linha.
+    edit = "" if getattr(post, "post_kind", "book") == "campaign" else (
         f'<button type="button" class="mini ghost js-edit" '
         f'data-id="{post.id}" data-clock="{escape(post.clock)}" '
         f'data-title="{escape(_star_title(post.caption, post.title))}" '

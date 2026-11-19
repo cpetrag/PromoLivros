@@ -18,6 +18,7 @@ _YEAR = re.compile(r"\b(?:19|20)\d{2}\b")
 _ASIN_URL = re.compile(r"(?:/dp/|/gp/product/|/gp/aw/d/|[?&]asin=)([A-Z0-9]{10})", re.IGNORECASE)
 _MLB_URL = re.compile(r"MLB-?(\d{6,14})", re.IGNORECASE)
 _MAX_SLOTS = 60
+CAMPAIGN_LABEL = "Campanha (rodízio)"
 _MIX_WINDOW = 4
 
 
@@ -48,6 +49,8 @@ class SlotFila:
     # Segunda oferta da mesma loja. Fica vazio quando o post tem uma oferta, ou duas de lojas diferentes.
     extra: ItemFila | None = None
     extra_avisos: tuple[str, ...] = ()
+    # Horário reservado ao rodízio de campanhas: não leva livros nem passos de resenha.
+    is_campaign: bool = False
 
 
 @dataclass(frozen=True)
@@ -350,6 +353,7 @@ def _avisos(slots: tuple[SlotFila, ...], obras_enviadas: tuple[tuple[str, str], 
                 tuple(notes.get((index, "magalu"), ())),
                 slot.extra,
                 tuple(notes.get((index, "extra"), ())),
+                is_campaign=slot.is_campaign,
             )
         )
     return tuple(marked)
