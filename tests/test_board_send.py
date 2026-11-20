@@ -196,6 +196,43 @@ class BoardSendTests(unittest.TestCase):
             self.assertEqual(sender.captions[0], "Oferta da campanha")
             store.close()
 
+    def test_campaign_post_keeps_registered_caption_without_queue_signature(self) -> None:
+        # A assinatura da fila troca qualquer linha com link.amazon; campanha não pode passar por isso.
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            store = _store(root)
+            store.put_setting(
+                "signatures",
+                "🚨 As melhores ofertas nos nossos grupos: https://aqui.descontos.ai/clubepromos",
+            )
+            campaign_dir = root / "data" / "campaigns" / "1"
+            campaign_dir.mkdir(parents=True)
+            (campaign_dir / "a.jpg").write_bytes(b"campaign-jpeg")
+            for post in store.posts_for("2026-09-28"):
+                store.cancel("2026-09-28", post.id)
+            caption = (
+                "_Black da Amazon_\n"
+                "_Todos cupons da Black da Amazon_\n\n"
+                "*Cupons com até 40% de desconto para usar na Black da Amazon*\n"
+                "https://link.amazon/B04Ox4N8C"
+            )
+            store.add_campaign_post(
+                "2026-09-28",
+                "10:00",
+                campaign_id=1,
+                image_id=1,
+                text_id=1,
+                caption=caption,
+                image_path="data/campaigns/1/a.jpg",
+            )
+            sender = _Sender()
+            now = datetime(2026, 9, 28, 10, 0, tzinfo=ZONE)
+
+            self.assertEqual(_publish(root, store, sender, now), "sent")
+            self.assertEqual(sender.captions[0], caption)
+            self.assertNotIn("aqui.descontos.ai", sender.captions[0])
+            store.close()
+
     def test_empty_campaign_post_is_skipped(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

@@ -142,8 +142,12 @@ def _campaign_image_or_repick(
 
 
 def _caption_for_send(store: BoardStore, post, *, already_sent: bool) -> str:
-    """No primeiro grupo do post, troca a assinatura pela próxima da lista."""
-    if already_sent:
+    """No primeiro grupo do post de livro, troca a assinatura pela próxima da lista.
+
+    Post de campanha mantém o texto cadastrado: a assinatura da fila troca qualquer
+    linha com link.amazon e apagaria o link do próprio anúncio.
+    """
+    if already_sent or getattr(post, "post_kind", None) == POST_KIND_CAMPAIGN:
         return post.caption
     signature = store.take_signature()
     if not signature:
