@@ -650,7 +650,8 @@ def _segunda_oferta(
     link = row.get("link_2") or ""
     if not any((raw, title, price_text, list_text, badge, coupon, link, image)):
         return None
-    loja = _loja_do_texto(raw)
+    # Link Magalu desambigua códigos no formato ASIN (ex.: bejk8f8a32).
+    loja = "magalu" if is_magalu_url(link) else _loja_do_texto(raw)
     if not loja:
         errors.append(f"Linha {linha}: não reconheci a segunda oferta {raw or 'sem código'}.")
         return None
@@ -968,9 +969,7 @@ def _codigo(value: str, *, loja: str, linha: int, errors: list[str]) -> str:
             if _ML_ID.fullmatch(upper):
                 errors.append(f"Linha {linha}: {stripped} é do Mercado Livre e vai nas colunas _ml com link MLB.")
                 return ""
-            if _ASIN.fullmatch(upper):
-                errors.append(f"Linha {linha}: {stripped} é da Amazon e vai na coluna asin.")
-                return ""
+            # Códigos Magalu podem ter 10 alfanuméricos — o mesmo formato do ASIN Amazon.
             return stripped
         errors.append(f"Linha {linha}: não reconheci o anúncio {text}.")
         return ""

@@ -154,6 +154,24 @@ class FilaCsvTests(unittest.TestCase):
         self.assertEqual(magalu["image_url"], image)
         self.assertIsNone(rows[0]["ml"])
 
+    def test_codigo_magalu_com_10_chars_nao_e_confundido_com_asin(self) -> None:
+        # IDs Magalu como bejk8f8a32 têm o mesmo formato [A-Z0-9]{10} do ASIN Amazon.
+        link = "https://www.magazineluiza.com.br/livro-colecao/p/bejk8f8a32/li/lifs/"
+        text = (
+            f"{_HEADER};asin_magalu;titulo_magalu;preco_magalu;preco_de_magalu;"
+            "menor_preco_365_magalu;cupom_magalu;imagem_magalu;link_magalu\n"
+            "10:30;8501922382;Kit thrillers;R$ 57,14;R$ 109,90;sim;;;;;;;;;"
+            f"bejk8f8a32;Mulheres notáveis;R$ 59,42;R$ 142,90;nao;;"
+            f"https://a-static.mlcdn.com.br/img.jpg;{link}\n"
+        )
+        rows = parse_fila_csv(text)
+        self.assertEqual(rows[0]["amazon"]["asin"], "8501922382")
+        magalu = rows[0]["magalu"]
+        self.assertIsNotNone(magalu)
+        self.assertEqual(magalu["store"], "magalu")
+        self.assertEqual(magalu["asin"], "bejk8f8a32")
+        self.assertEqual(magalu["url"], link)
+
     def test_link_magalu_de_outro_produto_recusa_a_linha(self) -> None:
         text = (
             f"{_HEADER};asin_magalu;titulo_magalu;preco_magalu;preco_de_magalu;"
