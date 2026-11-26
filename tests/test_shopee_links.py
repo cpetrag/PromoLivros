@@ -1,6 +1,7 @@
 import hashlib
 import json
 import unittest
+from urllib.error import URLError
 
 from promo_livros.shopee_links import (
     ShopeeLinkError,
@@ -72,3 +73,25 @@ class ShopeeLinkTests(unittest.TestCase):
     def test_sem_credencial_sobe_erro(self) -> None:
         with self.assertRaises(ShopeeLinkError):
             links_de_afiliado(["https://shopee.com.br/livro-i.1.2"], app_id="", secret="x")
+
+    def test_rede_instavel_tenta_de_novo_antes_de_falhar(self) -> None:
+        attempts = {"n": 0}
+
+        def opener(request, timeout=0):
+            attempts["n"] += 1
+            if attempts["n"] < 3:
+                raise URLError("temporary")
+            return _Response(
+                {"data": {"generateShortLink": {"shortLink": "https://s.shopee.com.br/ok"}}}
+            )
+
+        url = affiliate_url(
+            "https://shopee.com.br/livro-i.1.2",
+            app_id="18140170003",
+            secret="secret",
+            opener=opener,
+            now=1704067200,
+            sleep=lambda _seconds: None,
+        )
+        self.assertEqual(url, "https://s.shopee.com.br/ok")
+        self.assertEqual(attempts["n"], 3)

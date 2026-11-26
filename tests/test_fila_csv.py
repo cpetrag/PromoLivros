@@ -237,7 +237,7 @@ class FilaCsvTests(unittest.TestCase):
         self.assertIn("Importar fila", page)
         self.assertIn("Substitui a fila de hoje", page)
         self.assertIn('id="fila-csv"', page)
-        self.assertIn("Links do Mercado Livre que ficaram de fora", page)
+        self.assertIn("Links de afiliado que ficaram de fora", page)
         self.assertIn("Resolver", page)
 
     def test_recusa_coluna_trocada_horario_repetido_e_arquivo_vazio(self) -> None:

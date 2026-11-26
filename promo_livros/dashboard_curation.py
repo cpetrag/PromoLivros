@@ -1001,7 +1001,7 @@ _SCRIPT = r"""
       pintarFila(payload);
       if (payload.falha) { falhaFila(payload.falha); return; }
       if (payload.aguardando) {
-        $("fila-now").textContent = "Ainda há links do Mercado Livre quebrados.";
+        $("fila-now").textContent = "Ainda há links de afiliado quebrados.";
         $("fila-run-resolve").hidden = false;
         return;
       }
@@ -1264,9 +1264,9 @@ def render_curation(
       <p id="fila-skip" class="muted"></p>
       <ol id="fila-steps"></ol>
       <div id="fila-quebrados" hidden>
-        <p class="blocked">Links do Mercado Livre que ficaram de fora</p>
+        <p class="blocked">Links de afiliado que ficaram de fora</p>
         <ul></ul>
-        <p class="muted">Esse anúncio não entra no horário. O resto da fila segue. Se a sessão expirou, atualize os cookies e importe de novo.</p>
+        <p class="muted">Esse anúncio não entra no horário. O resto da fila segue. No Mercado Livre, atualize os cookies em Configurações; na Shopee ou Magalu, importe de novo.</p>
         <a href="/configuracoes" target="_blank">Abrir configurações</a>
       </div>
       <p id="fila-run-error" class="blocked" hidden></p>

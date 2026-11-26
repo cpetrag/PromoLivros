@@ -62,10 +62,51 @@ def affiliate_url(
     sub_id: str = "promolivros",
     opener=urlopen,
     now: int | None = None,
+    attempts: int = 3,
+    sleep=time.sleep,
 ) -> str:
     origin = (url or "").strip()
     if not origin:
         raise ShopeeLinkError("Falta o link da Shopee.")
+    last_error: Exception | None = None
+    rounds = max(1, int(attempts))
+    for index in range(rounds):
+        try:
+            return _affiliate_once(
+                origin,
+                app_id=app_id,
+                secret=secret,
+                sub_id=sub_id,
+                opener=opener,
+                now=None if now is None else int(now) + index,
+            )
+        except ShopeeLinkError as exc:
+            last_error = exc
+            if not _retryable(exc) or index + 1 >= rounds:
+                raise
+            sleep(0.4 * (index + 1))
+    assert last_error is not None
+    raise last_error
+
+
+def _retryable(exc: ShopeeLinkError) -> bool:
+    texto = str(exc)
+    if "recusou o link" in texto:
+        return False
+    if "Falta o link" in texto or "Faltam SHOPEE" in texto:
+        return False
+    return True
+
+
+def _affiliate_once(
+    origin: str,
+    *,
+    app_id: str,
+    secret: str,
+    sub_id: str,
+    opener,
+    now: int | None,
+) -> str:
     timestamp = str(int(now if now is not None else time.time()))
     query = (
         "mutation { generateShortLink(input: {"
